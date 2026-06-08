@@ -71,10 +71,11 @@ export class KeywordTrackingWebView {
       }
 
       webviewView.webview.postMessage({ command: 'showLoading' });
+      const branchArg = this.stateService.getCurrentBranch() || undefined;
 
       const [commits, occurrences] = await Promise.all([
-        this.gitService.searchCommitsByKeyword(keyword, filePath || undefined),
-        this.gitService.searchInHistory(keyword, filePath || undefined)
+        this.gitService.searchCommitsByKeyword(keyword, filePath || undefined, branchArg),
+        this.gitService.searchInHistory(keyword, filePath || undefined, branchArg)
       ]);
 
       webviewView.webview.html = this.getResultsHtml(keyword, filePath || '', commits, occurrences);

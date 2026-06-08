@@ -27,13 +27,14 @@ export class AuthorProfileProvider implements vscode.TreeDataProvider<AuthorItem
   }
 
   async loadData(): Promise<void> {
-    const basicAuthors = await this.gitService.getAllAuthors();
+    const branchArg = this.stateService.getCurrentBranch() || undefined;
+    const basicAuthors = await this.gitService.getAllAuthors(branchArg);
     this.totalCommits = basicAuthors.reduce((s, a) => s + a.commitCount, 0);
 
     const fullAuthors: (GitAuthor & { avatar?: string })[] = [];
     for (const basic of basicAuthors) {
       try {
-        const stats = await this.gitService.getAuthorStats(basic.name);
+        const stats = await this.gitService.getAuthorStats(basic.name, branchArg);
         fullAuthors.push({
           name: basic.name,
           email: basic.email,

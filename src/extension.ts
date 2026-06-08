@@ -172,7 +172,8 @@ function registerCommands(context: vscode.ExtensionContext): void {
 
     vscode.commands.registerCommand('gitArchaeologist.filterByAuthor', async () => {
       try {
-        const authors = await gitService.getAllAuthors();
+        const branchArg = stateService.getCurrentBranch() || undefined;
+        const authors = await gitService.getAllAuthors(branchArg);
         const current = stateService.getAuthors();
         const items = authors.map(a => ({
           label: `${current.includes(a.name) ? '✓ ' : ''}👤 ${a.name}`,
@@ -555,11 +556,12 @@ function registerCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('gitArchaeologist.exportReport', async () => {
       try {
         const options = stateService.getFilterOptions();
+        const branchArg = options.branch || undefined;
         const [repoInfo, commits, hotFiles, authors] = await Promise.all([
-          gitService.getRepositoryInfo(),
+          gitService.getRepositoryInfo(branchArg),
           gitService.getCommits(options),
-          gitService.getHotFiles(20),
-          gitService.getAllAuthors()
+          gitService.getHotFiles(20, branchArg),
+          gitService.getAllAuthors(branchArg)
         ]);
 
         const md = reportService.generateMarkdownReport(repoInfo, commits, options, hotFiles, authors);
@@ -611,7 +613,8 @@ function registerCommands(context: vscode.ExtensionContext): void {
       } else if (typeof fileOrItem === 'string') {
         filePath = fileOrItem;
       } else {
-        const deleted = await gitService.getDeletedFiles();
+        const branchArg = stateService.getCurrentBranch() || undefined;
+        const deleted = await gitService.getDeletedFiles(branchArg);
         const pick = await vscode.window.showQuickPick(
           deleted.map(d => ({
             label: `🗑️ ${d.filePath}`,
@@ -650,7 +653,8 @@ function registerCommands(context: vscode.ExtensionContext): void {
 
     vscode.commands.registerCommand('gitArchaeologist.showHotFiles', async () => {
       try {
-        const hotFiles = await gitService.getHotFiles(50);
+        const branchArg = stateService.getCurrentBranch() || undefined;
+        const hotFiles = await gitService.getHotFiles(50, branchArg);
         const threshold = stateService.getConfigHotFileThreshold();
         const hot = hotFiles.filter(f => f.changeCount >= threshold);
 

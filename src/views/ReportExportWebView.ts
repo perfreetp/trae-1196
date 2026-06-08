@@ -71,11 +71,12 @@ export class ReportExportWebView {
       webviewView.webview.postMessage({ command: 'showLoading' });
 
       const options = this.stateService.getFilterOptions();
+      const branchArg = options.branch || undefined;
       const [repoInfo, commits, hotFiles, authors] = await Promise.all([
-        this.gitService.getRepositoryInfo(),
+        this.gitService.getRepositoryInfo(branchArg),
         this.gitService.getCommits(options),
-        this.gitService.getHotFiles(20),
-        this.gitService.getAllAuthors()
+        this.gitService.getHotFiles(20, branchArg),
+        this.gitService.getAllAuthors(branchArg)
       ]);
 
       const reportMd = this.reportService.generateMarkdownReport(

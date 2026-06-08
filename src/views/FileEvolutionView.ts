@@ -30,8 +30,9 @@ export class FileEvolutionProvider implements vscode.TreeDataProvider<FileEvolut
   }
 
   async loadData(): Promise<void> {
-    this.hotFiles = await this.gitService.getHotFiles(100);
-    this.deletedFiles = await this.gitService.getDeletedFiles();
+    const branchArg = this.stateService.getCurrentBranch() || undefined;
+    this.hotFiles = await this.gitService.getHotFiles(100, branchArg);
+    this.deletedFiles = await this.gitService.getDeletedFiles(branchArg);
     this.refresh();
   }
 

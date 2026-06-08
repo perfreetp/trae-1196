@@ -72,11 +72,12 @@ export class OverviewWebView {
 
   private async updateView(webviewView: vscode.WebviewView): Promise<void> {
     try {
-      const repoInfo = await this.gitService.getRepositoryInfo();
-      const branches = await this.gitService.getBranches();
-      const authors = await this.gitService.getAllAuthors();
-      const hotFiles = await this.gitService.getHotFiles(10);
       const options = this.stateService.getFilterOptions();
+      const branchArg = options.branch || undefined;
+      const repoInfo = await this.gitService.getRepositoryInfo(branchArg);
+      const branches = await this.gitService.getBranches();
+      const authors = await this.gitService.getAllAuthors(branchArg);
+      const hotFiles = await this.gitService.getHotFiles(10, branchArg);
       const commits = await this.gitService.getCommits(options);
 
       const topAuthors = authors.slice(0, 5);

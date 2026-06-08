@@ -138,16 +138,24 @@ export class LineBlameWebView {
   private async refreshView(webviewView: vscode.WebviewView): Promise<void> {
     try {
       let filePath = this.currentFile;
+      const currentBranch = this.stateService.getCurrentBranch() || 'HEAD';
       if (!filePath) {
         webviewView.webview.html = this.getNoFileHtml();
         return;
       }
 
+      const exists = await this.gitService.fileExistsAtBranch(filePath, currentBranch);
+      if (!exists) {
+        webviewView.webview.html = this.getFileUnavailableHtml(filePath, currentBranch);
+        this.blameLines = [];
+        return;
+      }
+
       webviewView.webview.html = this.getLoadingHtml();
 
-      this.blameLines = await this.gitService.getBlame(filePath);
+      this.blameLines = await this.gitService.getBlame(filePath, currentBranch);
       const fileHistory = await this.gitService.getFileHistory(filePath, {
-        branch: this.stateService.getCurrentBranch(),
+        branch: currentBranch,
         maxCommits: 50
       });
 
@@ -155,6 +163,30 @@ export class LineBlameWebView {
     } catch (err) {
       webviewView.webview.html = this.getErrorHtml(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  private getFileUnavailableHtml(filePath: string, branch: string): string {
+    return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
+      body { font-family: sans-serif; padding: 24px; color: #d4d4d4; background: #1e1e1e; }
+      .container { max-width: 600px; margin: 0 auto; text-align: center; }
+      .icon { font-size: 48px; margin-bottom: 16px; opacity: 0.6; }
+      h2 { color: #f08c36; margin-bottom: 12px; }
+      .detail { color: #999; font-size: 13px; line-height: 1.7; margin: 16px 0; }
+      code { background: #2d2d2d; padding: 2px 6px; border-radius: 3px; color: #dcdcaa; }
+      .footer { margin-top: 32px; color: #666; font-size: 12px; }
+    </style></head><body>
+      <div class="container">
+        <div class="icon">🚫</div>
+        <h2>文件在当前分支不可用</h2>
+        <div class="detail">
+          文件 <code>${escapeHtml(filePath)}</code><br>
+          在分支 <code>${escapeHtml(branch)}</code> 中不存在。<br><br>
+          该文件可能仅存在于其他分支，或已在当前分支历史中被删除。<br>
+          请切换分支后重试，或通过文件演化的「已删除文件」分组查看历史内容。
+        </div>
+        <div class="footer">当前分支: ${escapeHtml(branch)}</div>
+      </div>
+    </body></html>`;
   }
 
   private async showDiff(commitHash: string, webviewView: vscode.WebviewView): Promise<void> {

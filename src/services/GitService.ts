@@ -343,10 +343,9 @@ export class GitService {
     return lines.sort((a, b) => a.lineNumber - b.lineNumber);
   }
 
-  async getHotFiles(limit: number = 20): Promise<HotFile[]> {
-    const output = await this.executeGitCommand([
-      'log', '--all', '--pretty=format:', '--name-only'
-    ]);
+  async getHotFiles(limit: number = 20, branch?: string): Promise<HotFile[]> {
+    const args = ['log', branch || 'HEAD', '--pretty=format:', '--name-only'];
+    const output = await this.executeGitCommand(args);
 
     const fileCounts = new Map<string, { count: number; authors: Set<string>; lastModified: string }>();
 
@@ -361,7 +360,7 @@ export class GitService {
       info.count++;
     }
 
-    const commits = await this.getCommits({ maxCommits: 1000 });
+    const commits = await this.getCommits({ branch: branch || undefined, maxCommits: 1000 });
     for (const commit of commits) {
       for (const file of commit.files) {
         const info = fileCounts.get(file.filePath);
@@ -387,11 +386,10 @@ export class GitService {
     return sorted;
   }
 
-  async getDeletedFiles(): Promise<DeletedFile[]> {
-    const output = await this.executeGitCommand([
-      'log', '--all', '--diff-filter=D', '--summary',
-      '--pretty=format:commit %H|%aI|%an'
-    ]);
+  async getDeletedFiles(branch?: string): Promise<DeletedFile[]> {
+    const args = ['log', branch || 'HEAD', '--diff-filter=D', '--summary',
+      '--pretty=format:commit %H|%aI|%an'];
+    const output = await this.executeGitCommand(args);
 
     const deletedFiles: DeletedFile[] = [];
     const lines = output.trim().split('\n');
@@ -426,6 +424,15 @@ export class GitService {
       return await this.executeGitCommand(['show', `${revision}:${filePath}`]);
     } catch {
       return '';
+    }
+  }
+
+  async fileExistsAtBranch(filePath: string, branch?: string): Promise<boolean> {
+    try {
+      await this.executeGitCommand(['cat-file', '-e', `${branch || 'HEAD'}:${filePath}`]);
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -495,10 +502,9 @@ export class GitService {
     return await this.executeGitCommand(['diff', commit1, commit2]);
   }
 
-  async getAllAuthors(): Promise<{ name: string; email: string; commitCount: number }[]> {
-    const output = await this.executeGitCommand([
-      'log', '--all', '--format=%an|%ae'
-    ]);
+  async getAllAuthors(branch?: string): Promise<{ name: string; email: string; commitCount: number }[]> {
+    const args = ['log', branch || 'HEAD', '--format=%an|%ae'];
+    const output = await this.executeGitCommand(args);
 
     const authorMap = new Map<string, { name: string; email: string; commitCount: number }>();
 
@@ -514,7 +520,7 @@ export class GitService {
     return Array.from(authorMap.values()).sort((a, b) => b.commitCount - a.commitCount);
   }
 
-  async getAuthorStats(authorName: string): Promise<{
+  async getAuthorStats(authorName: string, branch?: string): Promise<{
     filesTouched: string[];
     linesAdded: number;
     linesDeleted: number;
@@ -522,6 +528,7 @@ export class GitService {
     lastCommitDate: string;
   }> {
     const commits = await this.getCommits({
+      branch: branch || undefined,
       authors: [authorName],
       maxCommits: 10000
     });
@@ -555,7 +562,7 @@ export class GitService {
     };
   }
 
-  async getRepositoryInfo(): Promise<{
+  async getRepositoryInfo(branch?: string): Promise<{
     name: string;
     rootPath: string;
     totalCommits: number;
@@ -564,14 +571,14 @@ export class GitService {
     defaultBranch: string;
     remoteUrl?: string;
   }> {
-    const branch = await this.getCurrentBranch();
-    const totalCommitsOutput = await this.executeGitCommand(['rev-list', '--count', branch]);
+    const targetBranch = branch || (await this.getCurrentBranch());
+    const totalCommitsOutput = await this.executeGitCommand(['rev-list', '--count', targetBranch]);
     const totalCommits = parseInt(totalCommitsOutput.trim(), 10) || 0;
 
     let firstCommitDate = '';
     try {
       const firstOutput = await this.executeGitCommand([
-        'log', branch, '--reverse', '--pretty=format:%aI', '--max-count=1'
+        'log', targetBranch, '--reverse', '--pretty=format:%aI', '--max-count=1'
       ]);
       firstCommitDate = firstOutput.trim();
     } catch {}
@@ -579,7 +586,7 @@ export class GitService {
     let lastCommitDate = '';
     try {
       const lastOutput = await this.executeGitCommand([
-        'log', branch, '--pretty=format:%aI', '--max-count=1'
+        'log', targetBranch, '--pretty=format:%aI', '--max-count=1'
       ]);
       lastCommitDate = lastOutput.trim();
     } catch {}
@@ -599,7 +606,7 @@ export class GitService {
       totalCommits,
       firstCommitDate,
       lastCommitDate,
-      defaultBranch: branch,
+      defaultBranch: targetBranch,
       remoteUrl
     };
   }
@@ -640,8 +647,8 @@ export class GitService {
     return null;
   }
 
-  async searchCommitsByKeyword(keyword: string, filePath?: string): Promise<GitCommit[]> {
-    const args = ['log', '--all', '--oneline', '-S', keyword, '--pretty=format:%H'];
+  async searchCommitsByKeyword(keyword: string, filePath?: string, branch?: string): Promise<GitCommit[]> {
+    const args = ['log', branch || 'HEAD', '-S', keyword, '--pretty=format:%H'];
 
     if (filePath) {
       args.push('--', filePath);
@@ -676,13 +683,13 @@ export class GitService {
     return commits;
   }
 
-  async searchInHistory(keyword: string, filePath?: string): Promise<{
+  async searchInHistory(keyword: string, filePath?: string, branch?: string): Promise<{
     commitHash: string;
     filePath: string;
     line: number;
     content: string;
   }[]> {
-    const args = ['log', '-p', '--all', '-S', keyword, '--pretty=format:@@@COMMIT:%H@@@'];
+    const args = ['log', '-p', branch || 'HEAD', '-S', keyword, '--pretty=format:@@@COMMIT:%H@@@'];
     if (filePath) {
       args.push('--', filePath);
     }
