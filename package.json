@@ -1,0 +1,356 @@
+{
+  "name": "git-archaeologist",
+  "displayName": "Git 考古面板",
+  "description": "为接手旧仓库的开发者提供全面的代码历史追溯工具",
+  "version": "1.0.0",
+  "publisher": "git-archaeologist",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other",
+    "SCM Providers"
+  ],
+  "keywords": [
+    "git",
+    "history",
+    "archaeology",
+    "blame",
+    "commit",
+    "timeline"
+  ],
+  "icon": "resources/icon.png",
+  "activationEvents": [
+    "onView:gitArchaeologist",
+    "onView:gitArchaeologist.overview",
+    "onView:gitArchaeologist.timeline",
+    "onView:gitArchaeologist.fileEvolution",
+    "onView:gitArchaeologist.authorProfile",
+    "onView:gitArchaeologist.lineBlame",
+    "onView:gitArchaeologist.keywordTracking",
+    "onView:gitArchaeologist.reportExport",
+    "onCommand:gitArchaeologist.refresh",
+    "onCommand:gitArchaeologist.selectBranch",
+    "onCommand:gitArchaeologist.setDateRange",
+    "onCommand:gitArchaeologist.filterByAuthor",
+    "onCommand:gitArchaeologist.searchCommits",
+    "onCommand:gitArchaeologist.openCommit",
+    "onCommand:gitArchaeologist.diffCommits",
+    "onCommand:gitArchaeologist.showFileHistory",
+    "onCommand:gitArchaeologist.showBlame",
+    "onCommand:gitArchaeologist.favoriteCommit",
+    "onCommand:gitArchaeologist.addCommitNote",
+    "onCommand:gitArchaeologist.linkDefect",
+    "onCommand:gitArchaeologist.generateStoryline",
+    "onCommand:gitArchaeologist.exportReport",
+    "onCommand:gitArchaeologist.copyLocationLink",
+    "onCommand:gitArchaeologist.viewDeletedFile",
+    "onCommand:gitArchaeologist.showHotFiles",
+    "workspaceContains:.git"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "gitArchaeologist",
+          "title": "Git 考古",
+          "icon": "resources/archaeologist.svg"
+        }
+      ]
+    },
+    "views": {
+      "gitArchaeologist": [
+        {
+          "id": "gitArchaeologist.overview",
+          "name": "仓库总览",
+          "type": "webview",
+          "visibility": "visible",
+          "contextualTitle": "仓库总览"
+        },
+        {
+          "id": "gitArchaeologist.timeline",
+          "name": "提交时间线",
+          "type": "tree",
+          "icon": "resources/timeline.svg"
+        },
+        {
+          "id": "gitArchaeologist.fileEvolution",
+          "name": "文件演化",
+          "type": "tree",
+          "icon": "resources/file.svg"
+        },
+        {
+          "id": "gitArchaeologist.authorProfile",
+          "name": "作者画像",
+          "type": "tree",
+          "icon": "resources/author.svg"
+        },
+        {
+          "id": "gitArchaeologist.lineBlame",
+          "name": "行级溯源",
+          "type": "webview",
+          "visibility": "collapsed",
+          "contextualTitle": "行级溯源"
+        },
+        {
+          "id": "gitArchaeologist.keywordTracking",
+          "name": "关键词追踪",
+          "type": "webview",
+          "visibility": "collapsed",
+          "contextualTitle": "关键词追踪"
+        },
+        {
+          "id": "gitArchaeologist.reportExport",
+          "name": "报告导出",
+          "type": "webview",
+          "visibility": "collapsed",
+          "contextualTitle": "报告导出"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "gitArchaeologist.refresh",
+        "title": "刷新",
+        "icon": "$(refresh)",
+        "category": "Git 考古"
+      },
+      {
+        "command": "gitArchaeologist.selectBranch",
+        "title": "选择分支",
+        "icon": "$(git-branch)",
+        "category": "Git 考古"
+      },
+      {
+        "command": "gitArchaeologist.setDateRange",
+        "title": "设置日期范围",
+        "icon": "$(calendar)",
+        "category": "Git 考古"
+      },
+      {
+        "command": "gitArchaeologist.filterByAuthor",
+        "title": "按作者筛选",
+        "icon": "$(person)",
+        "category": "Git 考古"
+      },
+      {
+        "command": "gitArchaeologist.searchCommits",
+        "title": "搜索提交",
+        "icon": "$(search)",
+        "category": "Git 考古"
+      },
+      {
+        "command": "gitArchaeologist.openCommit",
+        "title": "查看提交详情",
+        "icon": "$(git-commit)",
+        "category": "Git 考古"
+      },
+      {
+        "command": "gitArchaeologist.diffCommits",
+        "title": "比较版本差异",
+        "icon": "$(diff)",
+        "category": "Git 考古"
+      },
+      {
+        "command": "gitArchaeologist.showFileHistory",
+        "title": "查看文件历史",
+        "icon": "$(history)",
+        "category": "Git 考古"
+      },
+      {
+        "command": "gitArchaeologist.showBlame",
+        "title": "显示行级责任",
+        "icon": "$(git-pull-request)",
+        "category": "Git 考古"
+      },
+      {
+        "command": "gitArchaeologist.favoriteCommit",
+        "title": "收藏提交",
+        "icon": "$(star)",
+        "category": "Git 考古"
+      },
+      {
+        "command": "gitArchaeologist.addCommitNote",
+        "title": "添加备注",
+        "icon": "$(note)",
+        "category": "Git 考古"
+      },
+      {
+        "command": "gitArchaeologist.linkDefect",
+        "title": "关联缺陷编号",
+        "icon": "$(link)",
+        "category": "Git 考古"
+      },
+      {
+        "command": "gitArchaeologist.generateStoryline",
+        "title": "生成改动故事线",
+        "icon": "$(book)",
+        "category": "Git 考古"
+      },
+      {
+        "command": "gitArchaeologist.exportReport",
+        "title": "导出 Markdown 报告",
+        "icon": "$(file-text)",
+        "category": "Git 考古"
+      },
+      {
+        "command": "gitArchaeologist.copyLocationLink",
+        "title": "复制定位链接",
+        "icon": "$(clippy)",
+        "category": "Git 考古"
+      },
+      {
+        "command": "gitArchaeologist.viewDeletedFile",
+        "title": "查看被删文件片段",
+        "icon": "$(trash)",
+        "category": "Git 考古"
+      },
+      {
+        "command": "gitArchaeologist.showHotFiles",
+        "title": "显示高频修改文件",
+        "icon": "$(flame)",
+        "category": "Git 考古"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "gitArchaeologist.refresh",
+          "when": "view == gitArchaeologist.timeline || view == gitArchaeologist.fileEvolution || view == gitArchaeologist.authorProfile",
+          "group": "navigation@1"
+        },
+        {
+          "command": "gitArchaeologist.selectBranch",
+          "when": "view == gitArchaeologist.timeline",
+          "group": "navigation@2"
+        },
+        {
+          "command": "gitArchaeologist.setDateRange",
+          "when": "view == gitArchaeologist.timeline",
+          "group": "navigation@3"
+        },
+        {
+          "command": "gitArchaeologist.filterByAuthor",
+          "when": "view == gitArchaeologist.timeline",
+          "group": "navigation@4"
+        },
+        {
+          "command": "gitArchaeologist.searchCommits",
+          "when": "view == gitArchaeologist.timeline",
+          "group": "navigation@5"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "gitArchaeologist.openCommit",
+          "when": "view == gitArchaeologist.timeline && viewItem == commit",
+          "group": "inline"
+        },
+        {
+          "command": "gitArchaeologist.favoriteCommit",
+          "when": "view == gitArchaeologist.timeline && viewItem == commit",
+          "group": "inline"
+        },
+        {
+          "command": "gitArchaeologist.addCommitNote",
+          "when": "view == gitArchaeologist.timeline && viewItem == commit",
+          "group": "1_modification@1"
+        },
+        {
+          "command": "gitArchaeologist.linkDefect",
+          "when": "view == gitArchaeologist.timeline && viewItem == commit",
+          "group": "1_modification@2"
+        },
+        {
+          "command": "gitArchaeologist.diffCommits",
+          "when": "view == gitArchaeologist.timeline && viewItem == commit",
+          "group": "2_diff@1"
+        },
+        {
+          "command": "gitArchaeologist.copyLocationLink",
+          "when": "view == gitArchaeologist.timeline && viewItem == commit",
+          "group": "3_copy@1"
+        },
+        {
+          "command": "gitArchaeologist.viewDeletedFile",
+          "when": "view == gitArchaeologist.fileEvolution && viewItem == deletedFile",
+          "group": "inline"
+        },
+        {
+          "command": "gitArchaeologist.showFileHistory",
+          "when": "view == gitArchaeologist.fileEvolution && viewItem == file",
+          "group": "inline"
+        },
+        {
+          "command": "gitArchaeologist.showHotFiles",
+          "when": "view == gitArchaeologist.fileEvolution",
+          "group": "inline"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "gitArchaeologist.refresh",
+          "when": "workspaceContains:.git"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Git 考古面板",
+      "properties": {
+        "gitArchaeologist.defaultBranch": {
+          "type": "string",
+          "default": "main",
+          "description": "默认分支"
+        },
+        "gitArchaeologist.maxCommits": {
+          "type": "number",
+          "default": 500,
+          "description": "最大加载提交数"
+        },
+        "gitArchaeologist.defectPattern": {
+          "type": "string",
+          "default": "#(\\d+)",
+          "description": "缺陷编号正则表达式"
+        },
+        "gitArchaeologist.defectUrlTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "缺陷系统 URL 模板，使用 {id} 作为占位符"
+        },
+        "gitArchaeologist.hotFileThreshold": {
+          "type": "number",
+          "default": 10,
+          "description": "高频文件修改次数阈值"
+        },
+        "gitArchaeologist.dataCachePath": {
+          "type": "string",
+          "default": ".git-archaeologist",
+          "description": "插件数据缓存目录"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.80.0",
+    "@types/glob": "^8.1.0",
+    "@types/mocha": "^10.0.1",
+    "@types/node": "20.2.5",
+    "@typescript-eslint/eslint-plugin": "^5.59.8",
+    "@typescript-eslint/parser": "^5.59.8",
+    "eslint": "^8.41.0",
+    "glob": "^8.1.0",
+    "mocha": "^10.2.0",
+    "typescript": "^5.1.3",
+    "@vscode/test-electron": "^2.3.2"
+  },
+  "dependencies": {}
+}
