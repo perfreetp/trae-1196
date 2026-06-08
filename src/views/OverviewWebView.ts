@@ -49,6 +49,11 @@ export class OverviewWebView {
       case 'openTimeline':
         await vscode.commands.executeCommand('workbench.view.extension.gitArchaeologist');
         break;
+      case 'showFileHistory':
+        if (msg.filePath) {
+          await vscode.commands.executeCommand('gitArchaeologist.showFileHistory', msg.filePath);
+        }
+        break;
     }
   }
 

@@ -130,7 +130,11 @@ function registerCommands(context: vscode.ExtensionContext): void {
 
         if (selected) {
           stateService.setCurrentBranch(selected.branch);
-          await timelineProvider.loadCommits();
+          await Promise.all([
+            timelineProvider.loadCommits(),
+            fileEvolutionProvider.loadData(),
+            authorProfileProvider.loadData()
+          ]);
           vscode.window.showInformationMessage(`已切换到分支: ${selected.branch}`);
         }
       } catch (err) {
@@ -220,8 +224,25 @@ function registerCommands(context: vscode.ExtensionContext): void {
       }
 
       try {
-        const commit = timelineProvider.getCommitByHash(commitHash)
-          || (await gitService.getCommits({ maxCommits: 1 }))[0];
+        let commit = timelineProvider.getCommitByHash(commitHash);
+        if (!commit) {
+          commit = await gitService.getSingleCommit(commitHash);
+        }
+        if (!commit) {
+          commit = {
+            hash: commitHash,
+            shortHash: commitHash.substring(0, 7),
+            message: '提交信息加载失败',
+            authorName: '未知',
+            authorEmail: '',
+            date: '',
+            body: '',
+            timestamp: 0,
+            parentHashes: [],
+            files: [],
+            stats: { totalFiles: 0, totalAdditions: 0, totalDeletions: 0 }
+          };
+        }
 
         const diff = await gitService.getDiff(commitHash);
         const fav = stateService.isFavorite(commitHash) ? '⭐' : '';

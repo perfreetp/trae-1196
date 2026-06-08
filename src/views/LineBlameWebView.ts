@@ -9,6 +9,8 @@ export class LineBlameWebView {
   public static readonly viewType = 'gitArchaeologist.lineBlame';
   private currentFile?: string;
   private blameLines: BlameLine[] = [];
+  private _currentView?: vscode.WebviewView;
+  private _pendingFilePath?: string;
 
   constructor(
     private context: vscode.ExtensionContext,
@@ -19,7 +21,13 @@ export class LineBlameWebView {
   ) {
     vscode.window.onDidChangeActiveTextEditor(async (editor) => {
       if (editor && editor.document && !editor.document.isUntitled) {
-        this.currentFile = path.relative(workspaceRoot, editor.document.fileName);
+        const relPath = path.relative(workspaceRoot, editor.document.fileName);
+        this.currentFile = relPath;
+        if (this._currentView && this._currentView.visible) {
+          try {
+            await this.refreshView(this._currentView);
+          } catch {}
+        }
       }
     });
 
@@ -29,6 +37,7 @@ export class LineBlameWebView {
   }
 
   async resolveWebviewView(webviewView: vscode.WebviewView): Promise<void> {
+    this._currentView = webviewView;
     webviewView.webview.options = {
       enableScripts: true
     };
@@ -37,7 +46,15 @@ export class LineBlameWebView {
 
     webviewView.onDidChangeVisibility(async () => {
       if (webviewView.visible) {
-        await this.refreshView(webviewView);
+        if (this._pendingFilePath) {
+          this.currentFile = this._pendingFilePath;
+          this._pendingFilePath = undefined;
+        }
+        try {
+          await this.refreshView(webviewView);
+        } catch (err) {
+          webviewView.webview.html = this.getErrorHtml(err instanceof Error ? err.message : String(err));
+        }
       }
     });
 
@@ -77,32 +94,34 @@ export class LineBlameWebView {
       }
     });
 
-    await this.refreshView(webviewView);
+    if (this._pendingFilePath) {
+      this.currentFile = this._pendingFilePath;
+      this._pendingFilePath = undefined;
+    }
+    try {
+      await this.refreshView(webviewView);
+    } catch (err) {
+      webviewView.webview.html = this.getErrorHtml(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async setAndLoadFile(filePath: string): Promise<void> {
     this.currentFile = filePath;
-    const view = await this.ensureViewVisible();
-    if (view) {
-      await this.refreshView(view);
+    if (this._currentView) {
+      try {
+        if (!this._currentView.visible) {
+          await vscode.commands.executeCommand('gitArchaeologist.lineBlame.focus');
+        }
+        await this.refreshView(this._currentView);
+      } catch (err) {
+        this._currentView.webview.html = this.getErrorHtml(err instanceof Error ? err.message : String(err));
+      }
+    } else {
+      this._pendingFilePath = filePath;
+      try {
+        await vscode.commands.executeCommand('gitArchaeologist.lineBlame.focus');
+      } catch {}
     }
-  }
-
-  private async ensureViewVisible(): Promise<vscode.WebviewView | undefined> {
-    return new Promise(async (resolve) => {
-      await vscode.commands.executeCommand('gitArchaeologist.lineBlame.focus');
-      setTimeout(() => {
-        const disposable = vscode.window.registerWebviewViewProvider(
-          LineBlameWebView.viewType,
-          {
-            resolveWebviewView: (view) => {
-              disposable.dispose();
-              resolve(view);
-            }
-          } as vscode.WebviewViewProvider
-        );
-      }, 300);
-    });
   }
 
   private async refreshView(webviewView: vscode.WebviewView): Promise<void> {

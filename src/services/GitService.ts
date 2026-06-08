@@ -31,7 +31,7 @@ export class GitService {
   async getBranches(): Promise<GitBranch[]> {
     const output = await this.executeGitCommand([
       'for-each-ref',
-      '--format=%(refname:short)|%(objectname)|%(committerdate:iso8601)|%(HEAD)',
+      '--format=%(refname)|%(refname:short)|%(objectname)|%(committerdate:iso8601)|%(HEAD)',
       'refs/heads/', 'refs/remotes/'
     ]);
 
@@ -40,16 +40,27 @@ export class GitService {
     const currentBranch = await this.getCurrentBranch();
 
     for (const line of lines) {
-      const [name, hash, date, head] = line.split('|');
-      const isRemote = name.startsWith('remotes/') || name.includes('/') && !name.startsWith('refs/heads');
-      const displayName = isRemote && name.startsWith('remotes/')
-        ? name.replace('remotes/', '')
-        : name;
+      const parts = line.split('|');
+      const refname = parts[0] || '';
+      const shortName = parts[1] || '';
+      const hash = parts[2] || '';
+      const date = parts[3] || '';
+      const head = parts[4] || '';
+
+      if (!refname) continue;
+
+      const isRemote = refname.startsWith('refs/remotes/');
+      if (isRemote && shortName.endsWith('/HEAD')) continue;
+
+      let displayName = shortName;
+      if (isRemote && shortName.startsWith('remotes/')) {
+        displayName = shortName.substring(8);
+      }
 
       branches.push({
         name: displayName,
-        isRemote: isRemote || name.includes('/'),
-        isCurrent: displayName === currentBranch || head === '*',
+        isRemote,
+        isCurrent: !isRemote && (displayName === currentBranch || head === '*'),
         lastCommitHash: hash,
         lastCommitDate: date
       });
@@ -396,7 +407,8 @@ export class GitService {
         currentDate = parts[1] || '';
         currentAuthor = parts[2] || '';
       } else if (line.startsWith(' delete mode ')) {
-        const filePath = line.split(' ').slice(3).join(' ');
+        const tokens = line.split(/\s+/).filter(t => t);
+        const filePath = tokens.slice(3).join(' ');
         deletedFiles.push({
           filePath,
           deletedInCommit: currentCommit,
@@ -532,6 +544,42 @@ export class GitService {
       defaultBranch: branch,
       remoteUrl
     };
+  }
+
+  async getSingleCommit(commitHash: string): Promise<GitCommit | null> {
+    try {
+      const args = [
+        'show', commitHash,
+        '--pretty=format:---COMMIT---%n%H|%h|%an|%ae|%aI|%s|%b|%P%n---DIFF---',
+        '--numstat', '-M', '-C'
+      ];
+      const raw = await this.executeGitCommand(args);
+      const parsed = this.parseCommits('---COMMIT---\n' + raw);
+      if (parsed.length > 0) {
+        return parsed[0];
+      }
+    } catch {}
+    try {
+      const args = ['show', '--no-patch', '--pretty=format:%H|%h|%an|%ae|%aI|%s|%b|%P', commitHash];
+      const info = await this.executeGitCommand(args);
+      const parts = info.split('|');
+      if (parts.length >= 6) {
+        return {
+          hash: parts[0],
+          shortHash: parts[1],
+          authorName: parts[2],
+          authorEmail: parts[3],
+          date: parts[4],
+          timestamp: new Date(parts[4]).getTime(),
+          message: parts[5],
+          body: parts[6] || '',
+          parentHashes: parts[7]?.split(' ').filter(p => p) || [],
+          files: [],
+          stats: { totalFiles: 0, totalAdditions: 0, totalDeletions: 0 }
+        };
+      }
+    } catch {}
+    return null;
   }
 
   async searchCommitsByKeyword(keyword: string, filePath?: string): Promise<GitCommit[]> {
