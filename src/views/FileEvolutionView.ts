@@ -17,6 +17,12 @@ export class FileEvolutionProvider implements vscode.TreeDataProvider<FileEvolut
     private stateService: StateService
   ) {
     this.hotFileThreshold = stateService.getConfigHotFileThreshold();
+    this.stateService.onDidChangeBranch(async () => {
+      try { await this.loadData(); } catch {}
+    });
+    this.stateService.onDidChangeFilter(async () => {
+      try { await this.loadData(); } catch {}
+    });
   }
 
   refresh(): void {
@@ -169,7 +175,7 @@ export class DeletedFileItem extends FileEvolutionItem {
     this.command = {
       command: 'gitArchaeologist.viewDeletedFile',
       title: '查看被删文件片段',
-      arguments: [deletedFile.filePath, deletedFile.deletedInCommit]
+      arguments: [this]
     };
   }
 

@@ -7,6 +7,7 @@ import { ReportService } from '../services/ReportService';
 
 export class ReportExportWebView {
   public static readonly viewType = 'gitArchaeologist.reportExport';
+  private _currentView?: vscode.WebviewView;
 
   constructor(
     private context: vscode.ExtensionContext,
@@ -14,9 +15,21 @@ export class ReportExportWebView {
     private stateService: StateService,
     private reportService: ReportService,
     private workspaceRoot: string
-  ) {}
+  ) {
+    this.stateService.onDidChangeBranch(async () => {
+      if (this._currentView && this._currentView.visible) {
+        try { await this.refreshPreview(this._currentView); } catch {}
+      }
+    });
+    this.stateService.onDidChangeFilter(async () => {
+      if (this._currentView && this._currentView.visible) {
+        try { await this.refreshPreview(this._currentView); } catch {}
+      }
+    });
+  }
 
   async resolveWebviewView(webviewView: vscode.WebviewView): Promise<void> {
+    this._currentView = webviewView;
     webviewView.webview.options = {
       enableScripts: true
     };

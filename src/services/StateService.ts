@@ -11,6 +11,14 @@ export class StateService {
 
   private state: PluginState;
 
+  private readonly _onDidChangeBranch = new vscode.EventEmitter<{ newBranch: string; oldBranch: string }>();
+  private readonly _onDidChangeFilter = new vscode.EventEmitter<void>();
+  private readonly _onDidChangeState = new vscode.EventEmitter<void>();
+
+  readonly onDidChangeBranch = this._onDidChangeBranch.event;
+  readonly onDidChangeFilter = this._onDidChangeFilter.event;
+  readonly onDidChangeState = this._onDidChangeState.event;
+
   constructor(context: vscode.ExtensionContext, workspaceRoot: string) {
     this.context = context;
     this.workspaceRoot = workspaceRoot;
@@ -80,9 +88,14 @@ export class StateService {
   }
 
   setCurrentBranch(branch: string): void {
+    const oldBranch = this.state.currentBranch;
+    if (oldBranch === branch) return;
     this.state.currentBranch = branch;
     this.state.filterOptions.branch = branch;
     this.saveState();
+    this._onDidChangeBranch.fire({ newBranch: branch, oldBranch });
+    this._onDidChangeFilter.fire();
+    this._onDidChangeState.fire();
   }
 
   getFilterOptions(): FilterOptions {
@@ -92,11 +105,15 @@ export class StateService {
   setFilterOptions(options: Partial<FilterOptions>): void {
     this.state.filterOptions = { ...this.state.filterOptions, ...options };
     this.saveState();
+    this._onDidChangeFilter.fire();
+    this._onDidChangeState.fire();
   }
 
   setDateRange(range: DateRange): void {
     this.state.filterOptions.dateRange = range;
     this.saveState();
+    this._onDidChangeFilter.fire();
+    this._onDidChangeState.fire();
   }
 
   getDateRange(): DateRange | undefined {
@@ -106,6 +123,8 @@ export class StateService {
   setAuthors(authors: string[]): void {
     this.state.filterOptions.authors = authors;
     this.saveState();
+    this._onDidChangeFilter.fire();
+    this._onDidChangeState.fire();
   }
 
   getAuthors(): string[] {
@@ -115,6 +134,8 @@ export class StateService {
   setSearchTerm(term: string): void {
     this.state.filterOptions.searchTerm = term;
     this.saveState();
+    this._onDidChangeFilter.fire();
+    this._onDidChangeState.fire();
   }
 
   getSearchTerm(): string | undefined {
@@ -249,5 +270,8 @@ export class StateService {
       selectedCommits: []
     };
     this.saveState();
+    this._onDidChangeBranch.fire({ newBranch: this.state.currentBranch, oldBranch: this.state.currentBranch });
+    this._onDidChangeFilter.fire();
+    this._onDidChangeState.fire();
   }
 }

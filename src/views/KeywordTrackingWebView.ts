@@ -5,6 +5,9 @@ import { ReportService } from '../services/ReportService';
 
 export class KeywordTrackingWebView {
   public static readonly viewType = 'gitArchaeologist.keywordTracking';
+  private _currentView?: vscode.WebviewView;
+  private _lastKeyword: string = '';
+  private _lastFilePath: string = '';
 
   constructor(
     private context: vscode.ExtensionContext,
@@ -12,9 +15,22 @@ export class KeywordTrackingWebView {
     private stateService: StateService,
     private reportService: ReportService,
     private workspaceRoot: string
-  ) {}
+  ) {
+    this.stateService.onDidChangeBranch(async () => {
+      if (this._currentView && this._currentView.visible && this._lastKeyword) {
+        try {
+          await this.performSearch(this._lastKeyword, this._lastFilePath, this._currentView);
+        } catch {}
+      } else if (this._currentView && this._currentView.visible) {
+        try {
+          await this._currentView.webview.postMessage({ command: 'branchChanged', newBranch: this.stateService.getCurrentBranch() });
+        } catch {}
+      }
+    });
+  }
 
   async resolveWebviewView(webviewView: vscode.WebviewView): Promise<void> {
+    this._currentView = webviewView;
     webviewView.webview.options = {
       enableScripts: true
     };
@@ -30,6 +46,8 @@ export class KeywordTrackingWebView {
     webviewView.webview.onDidReceiveMessage(async (msg) => {
       switch (msg.command) {
         case 'searchKeyword':
+          this._lastKeyword = msg.keyword || '';
+          this._lastFilePath = msg.filePath || '';
           await this.performSearch(msg.keyword, msg.filePath, webviewView);
           break;
         case 'openCommit':

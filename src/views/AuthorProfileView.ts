@@ -13,7 +13,14 @@ export class AuthorProfileProvider implements vscode.TreeDataProvider<AuthorItem
   constructor(
     private gitService: GitService,
     private stateService: StateService
-  ) {}
+  ) {
+    this.stateService.onDidChangeBranch(async () => {
+      try { await this.loadData(); } catch {}
+    });
+    this.stateService.onDidChangeFilter(async () => {
+      try { await this.loadData(); } catch {}
+    });
+  }
 
   refresh(): void {
     this._onDidChangeTreeData.fire();

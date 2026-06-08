@@ -15,7 +15,14 @@ export class CommitTimelineProvider implements vscode.TreeDataProvider<TimelineI
     private gitService: GitService,
     private stateService: StateService,
     private reportService: ReportService
-  ) {}
+  ) {
+    this.stateService.onDidChangeBranch(async () => {
+      try { await this.loadCommits(); } catch {}
+    });
+    this.stateService.onDidChangeFilter(async () => {
+      try { await this.loadCommits(); } catch {}
+    });
+  }
 
   refresh(): void {
     this._onDidChangeTreeData.fire();

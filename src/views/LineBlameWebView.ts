@@ -31,6 +31,17 @@ export class LineBlameWebView {
       }
     });
 
+    this.stateService.onDidChangeBranch(async () => {
+      if (this._currentView && this._currentView.visible) {
+        try { await this.refreshView(this._currentView); } catch {}
+      }
+    });
+    this.stateService.onDidChangeFilter(async () => {
+      if (this._currentView && this._currentView.visible) {
+        try { await this.refreshView(this._currentView); } catch {}
+      }
+    });
+
     if (vscode.window.activeTextEditor?.document && !vscode.window.activeTextEditor.document.isUntitled) {
       this.currentFile = path.relative(workspaceRoot, vscode.window.activeTextEditor.document.fileName);
     }

@@ -429,6 +429,64 @@ export class GitService {
     }
   }
 
+  async restoreDeletedFileContent(filePath: string, deletedInCommit?: string): Promise<{ content: string; foundRevision: string }> {
+    const revisionsToTry: string[] = [];
+
+    if (deletedInCommit) {
+      revisionsToTry.push(`${deletedInCommit}^1`);
+      revisionsToTry.push(`${deletedInCommit}^`);
+    }
+
+    if (revisionsToTry.length === 0 || revisionsToTry.every(r => !r)) {
+      try {
+        const findResult = await this.executeGitCommand([
+          'log', '--all', '--diff-filter=D', '--follow',
+          '--pretty=format:%H', '--max-count=5', '--', filePath
+        ]);
+        const commits = findResult.trim().split('\n').filter(h => h.trim());
+        for (const c of commits) {
+          revisionsToTry.push(`${c}^1`, `${c}^`);
+        }
+      } catch {}
+    }
+
+    revisionsToTry.push('HEAD~1', 'HEAD~5', 'HEAD~10');
+
+    let lastContent = '';
+    let lastRev = '';
+
+    for (const rev of revisionsToTry) {
+      if (!rev) continue;
+      try {
+        const content = await this.getFileContentAtRevision(filePath, rev);
+        if (content && content.trim().length > 0) {
+          return { content, foundRevision: rev };
+        }
+        if (!lastContent && content) {
+          lastContent = content;
+          lastRev = rev;
+        }
+      } catch {}
+    }
+
+    try {
+      const allRevs = await this.executeGitCommand([
+        'log', '--all', '--follow', '--pretty=format:%H', '--', filePath
+      ]);
+      const allCommitHashes = allRevs.trim().split('\n').filter(h => h.trim());
+      for (const hash of allCommitHashes.slice(0, 30)) {
+        try {
+          const content = await this.getFileContentAtRevision(filePath, hash);
+          if (content && content.trim().length > 0) {
+            return { content, foundRevision: hash };
+          }
+        } catch {}
+      }
+    } catch {}
+
+    return { content: lastContent, foundRevision: lastRev };
+  }
+
   async getDiff(commitHash: string): Promise<string> {
     return await this.executeGitCommand(['show', commitHash, '--patch', '--format=']);
   }

@@ -627,12 +627,16 @@ function registerCommands(context: vscode.ExtensionContext): void {
       }
 
       try {
-        const revision = deletedInCommit
-          ? `${deletedInCommit}^`
-          : 'HEAD';
+        const { content, foundRevision } = await gitService.restoreDeletedFileContent(filePath, deletedInCommit);
 
-        const content = await gitService.getFileContentAtRevision(filePath, revision);
-        const tempPath = path.join(workspaceRoot, '.git-archaeologist-tmp', `DELETED_${revision.substring(0, 8)}_${path.basename(filePath)}`);
+        if (!content || content.trim().length === 0) {
+          vscode.window.showWarningMessage(
+            `未能找到 "${filePath}" 在 ${foundRevision ? '版本 ' + foundRevision.substring(0, 7) : '任何历史版本'} 中的有效内容`
+          );
+        }
+
+        const tag = foundRevision ? foundRevision.replace(/[~^]/g, '-').substring(0, 12) : 'unknown';
+        const tempPath = path.join(workspaceRoot, '.git-archaeologist-tmp', `DELETED_${tag}_${path.basename(filePath)}`);
         const dir = path.dirname(tempPath);
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(tempPath, content, 'utf-8');
