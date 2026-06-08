@@ -1,11 +1,64 @@
-import { GitCommit, StorylineEntry, ReportData, FilterOptions, HotFile } from '../models/types';
+import { GitCommit, StorylineEntry, ReportData, FilterOptions, HotFile, ReportTemplate, ReportSectionKey, BranchDiffSummary, ReportGenerateOptions } from '../models/types';
 import { StateService } from './StateService';
+
+const REPORT_TEMPLATES: Record<ReportTemplate, {
+  label: string;
+  description: string;
+  defaultSections: ReportSectionKey[];
+  reportTitle: string;
+}> = {
+  handoff: {
+    label: '交接概览',
+    description: '适合项目交接，强调仓库全貌、作者贡献与代码热点，快速帮助接手人了解项目',
+    defaultSections: ['overview', 'authors', 'hotFiles', 'storylines', 'commitList'],
+    reportTitle: '项目交接 - Git 考古报告'
+  },
+  defect: {
+    label: '缺陷排查',
+    description: '追踪缺陷来源，突出可疑提交、风险变更、关联缺陷与关键代码改动',
+    defaultSections: ['overview', 'branchDiff', 'favorites', 'defects', 'storylines', 'hotFiles'],
+    reportTitle: '缺陷排查 - Git 考古报告'
+  },
+  release: {
+    label: '发布回顾',
+    description: '用于版本发布前复盘，突出新增提交、分支差异、作者参与与高频风险文件',
+    defaultSections: ['overview', 'branchDiff', 'authors', 'storylines', 'hotFiles', 'commitList'],
+    reportTitle: '发布回顾 - Git 考古报告'
+  }
+};
+
+const ALL_SECTIONS: { key: ReportSectionKey; label: string; description: string }[] = [
+  { key: 'overview', label: '仓库概览与筛选条件', description: '仓库元信息、提交总数、当前筛选条件' },
+  { key: 'branchDiff', label: '分支对比摘要', description: '与基准分支的差异：新增提交、独有作者、变更文件、风险提交' },
+  { key: 'authors', label: '作者贡献排行', description: '作者提交数排行、参与度与占比' },
+  { key: 'hotFiles', label: '高频修改文件', description: '修改最频繁的文件 TOP N 与参与作者数' },
+  { key: 'storylines', label: '改动故事线', description: '按影响规模分类的变更叙述，帮助理解演化脉络' },
+  { key: 'favorites', label: '收藏的可疑提交', description: '手动标记的重点/可疑提交完整详情' },
+  { key: 'defects', label: '缺陷统计', description: '从提交信息和手动关联中提取的缺陷编号 TOP' },
+  { key: 'commitList', label: '完整提交列表', description: '按当前筛选条件的完整提交明细表' }
+];
 
 export class ReportService {
   private stateService: StateService;
 
   constructor(stateService: StateService) {
     this.stateService = stateService;
+  }
+
+  getAvailableTemplates(): { id: ReportTemplate; label: string; description: string }[] {
+    return (Object.keys(REPORT_TEMPLATES) as ReportTemplate[]).map(id => ({
+      id,
+      label: REPORT_TEMPLATES[id].label,
+      description: REPORT_TEMPLATES[id].description
+    }));
+  }
+
+  getTemplateDefaultSections(template: ReportTemplate): ReportSectionKey[] {
+    return [...REPORT_TEMPLATES[template].defaultSections];
+  }
+
+  getAllSectionsMeta(): { key: ReportSectionKey; label: string; description: string }[] {
+    return ALL_SECTIONS;
   }
 
   generateStorylines(commits: GitCommit[]): StorylineEntry[] {
@@ -124,17 +177,7 @@ export class ReportService {
     return template.replace('{id}', id);
   }
 
-  generateMarkdownReport(
-    repoInfo: { name: string; rootPath: string; totalCommits: number; firstCommitDate: string; lastCommitDate: string; defaultBranch: string; remoteUrl?: string },
-    commits: GitCommit[],
-    filterOptions: FilterOptions,
-    hotFiles: HotFile[],
-    authors: { name: string; email: string; commitCount: number }[]
-  ): string {
-    const generatedAt = new Date().toISOString();
-    const storylines = this.generateStorylines(commits);
-    const favorites = commits.filter(c => this.stateService.isFavorite(c.hash));
-
+  computeTopDefects(commits: GitCommit[]): { id: string; count: number }[] {
     const allDefects = new Map<string, number>();
     for (const commit of commits) {
       const defects = this.extractDefectsFromMessage(commit.message, commit.body);
@@ -143,65 +186,169 @@ export class ReportService {
         allDefects.set(d, (allDefects.get(d) || 0) + 1);
       });
     }
-
-    const defectsByCount = Array.from(allDefects.entries())
+    return Array.from(allDefects.entries())
       .map(([id, count]) => ({ id, count }))
       .sort((a, b) => b.count - a.count);
+  }
 
-    const commitsByAuthor = authors
+  computeCommitsByAuthor(
+    authors: { name: string; email: string; commitCount: number }[]
+  ): { name: string; count: number }[] {
+    return authors
       .map(a => ({ name: a.name, count: a.commitCount }))
       .sort((a, b) => b.count - a.count);
+  }
 
-    let md = `# Git 考古报告\n\n`;
-    md += `> 生成时间：${this.formatDate(generatedAt)}\n\n`;
+  generateMarkdownReport(
+    repoInfo: { name: string; rootPath: string; totalCommits: number; firstCommitDate: string; lastCommitDate: string; defaultBranch: string; remoteUrl?: string },
+    commits: GitCommit[],
+    filterOptions: FilterOptions,
+    hotFiles: HotFile[],
+    authors: { name: string; email: string; commitCount: number }[],
+    options: ReportGenerateOptions = { template: 'handoff', sections: ALL_SECTIONS.map(s => s.key) },
+    diffSummary?: BranchDiffSummary
+  ): string {
+    const generatedAt = new Date().toISOString();
+    const storylines = this.generateStorylines(commits);
+    const favorites = commits.filter(c => this.stateService.isFavorite(c.hash));
+    const defectsByCount = this.computeTopDefects(commits);
+    const commitsByAuthor = this.computeCommitsByAuthor(authors);
+    const templateMeta = REPORT_TEMPLATES[options.template];
+    const sections = options.sections.length > 0 ? options.sections : templateMeta.defaultSections;
 
-    md += `## 仓库概览\n\n`;
-    md += `| 项目 | 值 |\n`;
-    md += `| --- | --- |\n`;
-    md += `| 仓库名称 | ${repoInfo.name} |\n`;
-    md += `| 本地路径 | \`${repoInfo.rootPath}\` |\n`;
-    md += `| 当前分支 | ${filterOptions.branch} |\n`;
-    if (repoInfo.remoteUrl) {
-      md += `| 远程仓库 | ${repoInfo.remoteUrl} |\n`;
+    const hasSection = (key: ReportSectionKey) => sections.includes(key);
+
+    let md = `# ${templateMeta.reportTitle}\n\n`;
+    md += `> 生成时间：${this.formatDate(generatedAt)}\n`;
+    md += `> 模板类型：${templateMeta.label}（${templateMeta.description}）\n\n`;
+
+    if (hasSection('overview')) {
+      md += `## 仓库概览\n\n`;
+      md += `| 项目 | 值 |\n`;
+      md += `| --- | --- |\n`;
+      md += `| 仓库名称 | ${repoInfo.name} |\n`;
+      md += `| 本地路径 | \`${repoInfo.rootPath}\` |\n`;
+      md += `| 当前分支 | ${filterOptions.branch} |\n`;
+      if (repoInfo.remoteUrl) {
+        md += `| 远程仓库 | ${repoInfo.remoteUrl} |\n`;
+      }
+      md += `| 总提交数 | ${repoInfo.totalCommits.toLocaleString()} |\n`;
+      md += `| 首次提交 | ${this.formatDate(repoInfo.firstCommitDate)} |\n`;
+      md += `| 最近提交 | ${this.formatDate(repoInfo.lastCommitDate)} |\n`;
+      md += `| 筛选提交数 | ${commits.length} |\n\n`;
+
+      md += `### 筛选条件\n\n`;
+      md += `- 分支：${filterOptions.branch}\n`;
+      md += `- 最大提交数：${filterOptions.maxCommits}\n`;
+      if (filterOptions.dateRange?.start || filterOptions.dateRange?.end) {
+        md += `- 日期范围：${filterOptions.dateRange.start || '不限'} ~ ${filterOptions.dateRange.end || '不限'}\n`;
+      }
+      if (filterOptions.authors && filterOptions.authors.length > 0) {
+        md += `- 作者：${filterOptions.authors.join('、')}\n`;
+      }
+      if (filterOptions.searchTerm) {
+        md += `- 搜索关键词：${filterOptions.searchTerm}\n`;
+      }
+      md += `\n`;
     }
-    md += `| 总提交数 | ${repoInfo.totalCommits.toLocaleString()} |\n`;
-    md += `| 首次提交 | ${this.formatDate(repoInfo.firstCommitDate)} |\n`;
-    md += `| 最近提交 | ${this.formatDate(repoInfo.lastCommitDate)} |\n`;
-    md += `| 筛选提交数 | ${commits.length} |\n\n`;
 
-    md += `### 筛选条件\n\n`;
-    md += `- 分支：${filterOptions.branch}\n`;
-    md += `- 最大提交数：${filterOptions.maxCommits}\n`;
-    if (filterOptions.dateRange?.start || filterOptions.dateRange?.end) {
-      md += `- 日期范围：${filterOptions.dateRange.start || '不限'} ~ ${filterOptions.dateRange.end || '不限'}\n`;
+    if (hasSection('branchDiff') && diffSummary) {
+      md += `## 分支对比摘要 (${diffSummary.baseBranch} → ${diffSummary.targetBranch})\n\n`;
+      md += `- **新增提交数**：${diffSummary.addedCommits.length}\n`;
+      md += `- **回退/缺失提交数**：${diffSummary.removedCommits.length}\n`;
+      md += `- **目标分支独有作者**：${diffSummary.authorsOnlyInTarget.length}\n`;
+      md += `- **变更文件数**：${diffSummary.changedFiles.length}\n`;
+      md += `- **风险提交数**：${diffSummary.riskyCommits.length}\n\n`;
+
+      if (diffSummary.addedCommits.length > 0) {
+        md += `### 新增提交 TOP 20\n\n`;
+        md += `| 哈希 | 日期 | 作者 | 说明 |\n`;
+        md += `| --- | --- | --- | --- |\n`;
+        for (const commit of diffSummary.addedCommits.slice(0, 20)) {
+          const msg = commit.message.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+          md += `| \`${commit.shortHash}\` | ${this.formatDate(commit.date)} | ${commit.authorName} | ${msg} |\n`;
+        }
+        md += `\n`;
+      }
+
+      if (diffSummary.authorsOnlyInTarget.length > 0) {
+        md += `### 目标分支独有作者\n\n`;
+        md += `| 作者 | 提交数 | 邮箱 |\n`;
+        md += `| --- | --- | --- |\n`;
+        for (const a of diffSummary.authorsOnlyInTarget.slice(0, 20)) {
+          md += `| ${a.name} | ${a.commitCount} | ${a.email} |\n`;
+        }
+        md += `\n`;
+      }
+
+      if (diffSummary.changedFiles.length > 0) {
+        md += `### 最频繁变更文件 TOP 20\n\n`;
+        md += `| 文件 | 新增行 | 删除行 |\n`;
+        md += `| --- | --- | --- |\n`;
+        for (const f of diffSummary.changedFiles.slice(0, 20)) {
+          md += `| \`${f.filePath}\` | +${f.additions} | -${f.deletions} |\n`;
+        }
+        md += `\n`;
+      }
+
+      if (diffSummary.riskyCommits.length > 0) {
+        md += `### ⚠️ 风险提交\n\n`;
+        for (const commit of diffSummary.riskyCommits) {
+          md += `- **${commit.shortHash}** ${commit.authorName} · ${this.formatDate(commit.date)}\n`;
+          md += `  - 说明：${commit.message}\n`;
+          md += `  - 规模：${commit.stats?.totalFiles || 0} 文件，+${commit.stats?.totalAdditions || 0} -${commit.stats?.totalDeletions || 0}\n\n`;
+        }
+      }
     }
-    if (filterOptions.authors && filterOptions.authors.length > 0) {
-      md += `- 作者：${filterOptions.authors.join('、')}\n`;
+
+    if (hasSection('authors')) {
+      md += `## 作者贡献排行\n\n`;
+      md += `| 排名 | 作者 | 提交数 | 占比 |\n`;
+      md += `| --- | --- | --- | --- |\n`;
+      const totalCommitsVal = commitsByAuthor.reduce((s, a) => s + a.count, 0);
+      commitsByAuthor.slice(0, 20).forEach((a, idx) => {
+        const pct = totalCommitsVal > 0 ? ((a.count / totalCommitsVal) * 100).toFixed(1) : '0';
+        md += `| ${idx + 1} | ${a.name} | ${a.count} | ${pct}% |\n`;
+      });
+      md += `\n`;
     }
-    if (filterOptions.searchTerm) {
-      md += `- 搜索关键词：${filterOptions.searchTerm}\n`;
+
+    if (hasSection('hotFiles')) {
+      md += `## 高频修改文件\n\n`;
+      md += `| 文件 | 修改次数 | 参与作者数 | 最近修改 |\n`;
+      md += `| --- | --- | --- | --- |\n`;
+      hotFiles.slice(0, 20).forEach(hf => {
+        md += `| \`${hf.filePath}\` | ${hf.changeCount} | ${hf.authors.length} | ${this.formatDate(hf.lastModified)} |\n`;
+      });
+      md += `\n`;
     }
-    md += `\n`;
 
-    md += `## 作者贡献排行\n\n`;
-    md += `| 排名 | 作者 | 提交数 | 占比 |\n`;
-    md += `| --- | --- | --- | --- |\n`;
-    const totalCommits = commitsByAuthor.reduce((s, a) => s + a.count, 0);
-    commitsByAuthor.slice(0, 20).forEach((a, idx) => {
-      const pct = totalCommits > 0 ? ((a.count / totalCommits) * 100).toFixed(1) : '0';
-      md += `| ${idx + 1} | ${a.name} | ${a.count} | ${pct}% |\n`;
-    });
-    md += `\n`;
+    if (hasSection('storylines')) {
+      md += `## 改动故事线\n\n`;
+      const highImpact = storylines.filter(s => s.impact === 'high');
+      const mediumImpact = storylines.filter(s => s.impact === 'medium');
+      const lowImpact = storylines.filter(s => s.impact === 'low');
 
-    md += `## 高频修改文件\n\n`;
-    md += `| 文件 | 修改次数 | 参与作者数 | 最近修改 |\n`;
-    md += `| --- | --- | --- | --- |\n`;
-    hotFiles.slice(0, 20).forEach(hf => {
-      md += `| \`${hf.filePath}\` | ${hf.changeCount} | ${hf.authors.length} | ${this.formatDate(hf.lastModified)} |\n`;
-    });
-    md += `\n`;
+      md += `### 大规模变更 (${highImpact.length})\n\n`;
+      for (const s of highImpact.slice(0, 30)) {
+        md += `- **${this.formatDate(s.commit.date)}** ${s.narrative}\n`;
+      }
+      md += `\n`;
 
-    if (favorites.length > 0) {
+      md += `### 中等规模变更 (${mediumImpact.length})\n\n`;
+      for (const s of mediumImpact.slice(0, 50)) {
+        md += `- ${this.formatDate(s.commit.date)} ${s.narrative}\n`;
+      }
+      md += `\n`;
+
+      md += `### 小范围变更 (${lowImpact.length})\n\n`;
+      for (const s of lowImpact.slice(0, 100)) {
+        md += `- ${this.formatDate(s.commit.date)} ${s.narrative}\n`;
+      }
+      md += `\n`;
+    }
+
+    if (hasSection('favorites') && favorites.length > 0) {
       md += `## 收藏的可疑提交\n\n`;
       for (const commit of favorites) {
         md += `### ${commit.shortHash} - ${commit.message}\n\n`;
@@ -220,30 +367,7 @@ export class ReportService {
       }
     }
 
-    md += `## 改动故事线\n\n`;
-    const highImpact = storylines.filter(s => s.impact === 'high');
-    const mediumImpact = storylines.filter(s => s.impact === 'medium');
-    const lowImpact = storylines.filter(s => s.impact === 'low');
-
-    md += `### 大规模变更 (${highImpact.length})\n\n`;
-    for (const s of highImpact.slice(0, 30)) {
-      md += `- **${this.formatDate(s.commit.date)}** ${s.narrative}\n`;
-    }
-    md += `\n`;
-
-    md += `### 中等规模变更 (${mediumImpact.length})\n\n`;
-    for (const s of mediumImpact.slice(0, 50)) {
-      md += `- ${this.formatDate(s.commit.date)} ${s.narrative}\n`;
-    }
-    md += `\n`;
-
-    md += `### 小范围变更 (${lowImpact.length})\n\n`;
-    for (const s of lowImpact.slice(0, 100)) {
-      md += `- ${this.formatDate(s.commit.date)} ${s.narrative}\n`;
-    }
-    md += `\n`;
-
-    if (defectsByCount.length > 0) {
+    if (hasSection('defects') && defectsByCount.length > 0) {
       md += `## 相关缺陷 TOP\n\n`;
       md += `| 缺陷编号 | 关联提交数 | 详情 |\n`;
       md += `| --- | --- | --- |\n`;
@@ -254,23 +378,68 @@ export class ReportService {
       md += `\n`;
     }
 
-    md += `## 完整提交列表\n\n`;
-    md += `| 哈希 | 日期 | 作者 | 说明 | 文件 | +/- |\n`;
-    md += `| --- | --- | --- | --- | --- | --- |\n`;
-    for (const commit of commits.slice(0, 500)) {
-      const msg = commit.message.replace(/\|/g, '\\|').replace(/\n/g, ' ');
-      md += `| \`${commit.shortHash}\` | ${this.formatDate(commit.date)} | ${commit.authorName} | ${msg} | ${commit.stats?.totalFiles || 0} | +${commit.stats?.totalAdditions || 0} -${commit.stats?.totalDeletions || 0} |\n`;
-    }
-    md += `\n`;
+    if (hasSection('commitList')) {
+      md += `## 完整提交列表\n\n`;
+      md += `| 哈希 | 日期 | 作者 | 说明 | 文件 | +/- |\n`;
+      md += `| --- | --- | --- | --- | --- | --- |\n`;
+      for (const commit of commits.slice(0, 500)) {
+        const msg = commit.message.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+        md += `| \`${commit.shortHash}\` | ${this.formatDate(commit.date)} | ${commit.authorName} | ${msg} | ${commit.stats?.totalFiles || 0} | +${commit.stats?.totalAdditions || 0} -${commit.stats?.totalDeletions || 0} |\n`;
+      }
+      md += `\n`;
 
-    if (commits.length > 500) {
-      md += `> 后续 ${commits.length - 500} 条提交记录已省略\n\n`;
+      if (commits.length > 500) {
+        md += `> 后续 ${commits.length - 500} 条提交记录已省略\n\n`;
+      }
     }
 
     md += `---\n\n`;
-    md += `*本报告由 Git 考古面板自动生成*\n`;
+    md += `*本报告由 Git 考古面板自动生成 · 模板：${templateMeta.label} · 分支：${filterOptions.branch}*\n`;
 
     return md;
+  }
+
+  generateJsonReport(
+    repoInfo: { name: string; rootPath: string; totalCommits: number; firstCommitDate: string; lastCommitDate: string; defaultBranch: string; remoteUrl?: string },
+    commits: GitCommit[],
+    filterOptions: FilterOptions,
+    hotFiles: HotFile[],
+    authors: { name: string; email: string; commitCount: number }[],
+    options: ReportGenerateOptions = { template: 'handoff', sections: ALL_SECTIONS.map(s => s.key) },
+    diffSummary?: BranchDiffSummary
+  ): ReportData & {
+    template: ReportTemplate;
+    sections: ReportSectionKey[];
+    diffSummary?: BranchDiffSummary;
+    allCommits: GitCommit[];
+    allAuthors: { name: string; email: string; commitCount: number }[];
+  } {
+    const generatedAt = new Date().toISOString();
+    const storylines = this.generateStorylines(commits);
+    const favorites = commits.filter(c => this.stateService.isFavorite(c.hash));
+    const topDefects = this.computeTopDefects(commits);
+    const commitsByAuthor = this.computeCommitsByAuthor(authors);
+    const totalFiles = new Set(commits.flatMap(c => c.files.map(f => f.filePath))).size;
+
+    return {
+      generatedAt,
+      repositoryName: repoInfo.name,
+      branch: filterOptions.branch,
+      filterOptions,
+      totalCommits: commits.length,
+      totalAuthors: authors.length,
+      totalFiles,
+      commitsByAuthor,
+      hotFiles,
+      storylines,
+      favoriteCommits: favorites,
+      topDefects,
+      template: options.template,
+      sections: options.sections,
+      diffSummary,
+      allCommits: commits,
+      allAuthors: authors
+    };
   }
 
   generateLocationLink(

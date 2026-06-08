@@ -751,4 +751,72 @@ export class GitService {
 
     return results;
   }
+
+  async getBranchDiff(baseBranch: string, targetBranch: string): Promise<{
+    addedCommits: GitCommit[];
+    removedCommits: GitCommit[];
+    changedFiles: { filePath: string; additions: number; deletions: number }[];
+  }> {
+    try {
+      const addedHashesStr = await this.executeGitCommand([
+        'log', '--pretty=format:%H', `${baseBranch}..${targetBranch}`
+      ]);
+      const addedHashes = addedHashesStr.trim().split('\n').filter(h => h.trim());
+
+      const removedHashesStr = await this.executeGitCommand([
+        'log', '--pretty=format:%H', `${targetBranch}..${baseBranch}`
+      ]);
+      const removedHashes = removedHashesStr.trim().split('\n').filter(h => h.trim());
+
+      const [addedCommits, removedCommits] = await Promise.all([
+        Promise.all(addedHashes.slice(0, 200).map(h => this.getSingleCommit(h)).then(cs => cs.filter(c => c !== null) as GitCommit[])),
+        Promise.all(removedHashes.slice(0, 200).map(h => this.getSingleCommit(h)).then(cs => cs.filter(c => c !== null) as GitCommit[]))
+      ]);
+
+      const fileMap = new Map<string, { additions: number; deletions: number }>();
+      try {
+        const numstat = await this.executeGitCommand([
+          'diff', '--numstat', baseBranch, targetBranch
+        ]);
+        for (const line of numstat.trim().split('\n').filter(l => l.trim())) {
+          const parts = line.split('\t');
+          if (parts.length >= 3) {
+            const addStr = parts[0];
+            const delStr = parts[1];
+            const filePath = parts.slice(2).join('\t');
+            const a = addStr === '-' ? 0 : (parseInt(addStr, 10) || 0);
+            const d = delStr === '-' ? 0 : (parseInt(delStr, 10) || 0);
+            const existing = fileMap.get(filePath) || { additions: 0, deletions: 0 };
+            existing.additions += a;
+            existing.deletions += d;
+            fileMap.set(filePath, existing);
+          }
+        }
+      } catch {}
+
+      const changedFiles = Array.from(fileMap.entries())
+        .map(([filePath, v]) => ({ filePath, additions: v.additions, deletions: v.deletions }))
+        .sort((a, b) => (b.additions + b.deletions) - (a.additions + a.deletions))
+        .slice(0, 50);
+
+      return { addedCommits, removedCommits, changedFiles };
+    } catch {
+      return { addedCommits: [], removedCommits: [], changedFiles: [] };
+    }
+  }
+
+  getRiskyCommits(commits: GitCommit[]): GitCommit[] {
+    return commits.filter(c => {
+      const total = (c.stats?.totalAdditions || 0) + (c.stats?.totalDeletions || 0);
+      const files = c.stats?.totalFiles || 0;
+      const msg = (c.message + ' ' + (c.body || '')).toLowerCase();
+      const hasHugeChange = total > 500 || files > 20;
+      const hasRiskyKeyword = /revert|force|hack|todo|fixme|xxx|warning|danger|critical|security|权限|绕过|跳过|临时|硬编码|密码|secret|password|token/i.test(msg);
+      return hasHugeChange || hasRiskyKeyword;
+    }).sort((a, b) => {
+      const sa = (a.stats?.totalAdditions || 0) + (a.stats?.totalDeletions || 0);
+      const sb = (b.stats?.totalAdditions || 0) + (b.stats?.totalDeletions || 0);
+      return sb - sa;
+    }).slice(0, 20);
+  }
 }

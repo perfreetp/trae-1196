@@ -4,10 +4,29 @@ import * as path from 'path';
 import { GitService } from '../services/GitService';
 import { StateService } from '../services/StateService';
 import { ReportService } from '../services/ReportService';
+import { GitCommit, ReportTemplate, ReportSectionKey, BranchDiffSummary, HotFile, FilterOptions } from '../models/types';
+
+interface CachedReportData {
+  repoInfo: { name: string; rootPath: string; totalCommits: number; firstCommitDate: string; lastCommitDate: string; defaultBranch: string; remoteUrl?: string };
+  commits: GitCommit[];
+  hotFiles: HotFile[];
+  authors: { name: string; email: string; commitCount: number }[];
+  options: FilterOptions;
+  diffSummary?: BranchDiffSummary;
+  template: ReportTemplate;
+  selectedSections: ReportSectionKey[];
+  baseBranchForDiff?: string;
+  allBranches: { name: string; isRemote: boolean; isCurrent: boolean }[];
+}
 
 export class ReportExportWebView {
   public static readonly viewType = 'gitArchaeologist.reportExport';
   private _currentView?: vscode.WebviewView;
+
+  private _currentTemplate: ReportTemplate = 'handoff';
+  private _selectedSections: ReportSectionKey[] = this.reportService.getTemplateDefaultSections('handoff');
+  private _baseBranchForDiff?: string;
+  private _cached?: CachedReportData;
 
   constructor(
     private context: vscode.ExtensionContext,
@@ -47,6 +66,42 @@ export class ReportExportWebView {
         case 'generatePreview':
           await this.refreshPreview(webviewView);
           break;
+        case 'selectTemplate':
+          if (msg.template) {
+            this._currentTemplate = msg.template as ReportTemplate;
+            this._selectedSections = this.reportService.getTemplateDefaultSections(this._currentTemplate);
+            await this.refreshPreview(webviewView);
+          }
+          break;
+        case 'toggleSection':
+          if (msg.section) {
+            const key = msg.section as ReportSectionKey;
+            const idx = this._selectedSections.indexOf(key);
+            if (idx >= 0) {
+              this._selectedSections.splice(idx, 1);
+            } else {
+              this._selectedSections.push(key);
+            }
+            await this.refreshPreview(webviewView);
+          }
+          break;
+        case 'pickBaseBranch':
+          await this.pickBaseBranch(webviewView);
+          break;
+        case 'clearBaseBranch':
+          this._baseBranchForDiff = undefined;
+          await this.refreshPreview(webviewView);
+          break;
+        case 'openCommitFromDiff':
+          if (msg.commitHash) {
+            await vscode.commands.executeCommand('gitArchaeologist.openCommit', msg.commitHash);
+          }
+          break;
+        case 'showFileHistoryFromDiff':
+          if (msg.filePath) {
+            await vscode.commands.executeCommand('gitArchaeologist.showFileHistory', msg.filePath);
+          }
+          break;
         case 'exportMarkdown':
           await this.exportMarkdown(webviewView);
           break;
@@ -66,34 +121,114 @@ export class ReportExportWebView {
     });
   }
 
+  private async pickBaseBranch(webviewView: vscode.WebviewView): Promise<void> {
+    try {
+      const branches = await this.gitService.getBranches();
+      const current = this.stateService.getCurrentBranch();
+      const items = branches
+        .filter(b => !b.isRemote && b.name !== current)
+        .map(b => ({
+          label: `🌿 ${b.name}`,
+          description: b.lastCommitDate ? `更新于 ${this.formatDate(b.lastCommitDate)}` : undefined,
+          name: b.name
+        }));
+
+      const pick = await vscode.window.showQuickPick(items, {
+        title: '选择基准分支（与当前选中分支对比）',
+        placeHolder: '选择用于对比的基准分支...'
+      });
+
+      if (pick) {
+        this._baseBranchForDiff = pick.name;
+        await this.refreshPreview(webviewView);
+      }
+    } catch (err) {
+      vscode.window.showErrorMessage(`选择基准分支失败: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
   private async refreshPreview(webviewView: vscode.WebviewView): Promise<void> {
     try {
       webviewView.webview.postMessage({ command: 'showLoading' });
 
       const options = this.stateService.getFilterOptions();
       const branchArg = options.branch || undefined;
-      const [repoInfo, commits, hotFiles, authors] = await Promise.all([
+      const [repoInfo, commits, hotFiles, authors, allBranches] = await Promise.all([
         this.gitService.getRepositoryInfo(branchArg),
         this.gitService.getCommits(options),
         this.gitService.getHotFiles(20, branchArg),
-        this.gitService.getAllAuthors(branchArg)
+        this.gitService.getAllAuthors(branchArg),
+        this.gitService.getBranches()
       ]);
 
+      let diffSummary: BranchDiffSummary | undefined;
+      const baseBranch = this._baseBranchForDiff;
+      if (baseBranch && options.branch && baseBranch !== options.branch) {
+        const diff = await this.gitService.getBranchDiff(baseBranch, options.branch);
+        const baseAuthors = await this.gitService.getAllAuthors(baseBranch);
+        const baseAuthorEmails = new Set(baseAuthors.map(a => a.email.toLowerCase()));
+        const targetAuthorEmails = new Set(authors.map(a => a.email.toLowerCase()));
+        const authorsOnlyInTarget = authors.filter(a => !baseAuthorEmails.has(a.email.toLowerCase()));
+        const authorsOnlyInBase = baseAuthors.filter(a => !targetAuthorEmails.has(a.email.toLowerCase()));
+        const riskyCommits = this.gitService.getRiskyCommits(diff.addedCommits);
+
+        diffSummary = {
+          baseBranch,
+          targetBranch: options.branch,
+          addedCommits: diff.addedCommits,
+          removedCommits: diff.removedCommits,
+          authorsOnlyInTarget,
+          authorsOnlyInBase,
+          changedFiles: diff.changedFiles,
+          riskyCommits
+        };
+      }
+
+      this._cached = {
+        repoInfo,
+        commits,
+        hotFiles,
+        authors,
+        options,
+        diffSummary,
+        template: this._currentTemplate,
+        selectedSections: [...this._selectedSections],
+        baseBranchForDiff: baseBranch,
+        allBranches: allBranches.map(b => ({ name: b.name, isRemote: b.isRemote, isCurrent: b.isCurrent }))
+      };
+
       const reportMd = this.reportService.generateMarkdownReport(
-        repoInfo, commits, options, hotFiles, authors
+        repoInfo, commits, options, hotFiles, authors,
+        {
+          template: this._currentTemplate,
+          sections: this._selectedSections,
+          baseBranchForDiff: baseBranch
+        },
+        diffSummary
       );
+
       const storylines = this.reportService.generateStorylines(commits);
       const favorites = commits.filter(c => this.stateService.isFavorite(c.hash));
+      const topDefects = this.reportService.computeTopDefects(commits);
+      const templates = this.reportService.getAvailableTemplates();
+      const sectionsMeta = this.reportService.getAllSectionsMeta();
 
       webviewView.webview.postMessage({
         command: 'updatePreview',
         data: {
+          templates,
+          currentTemplate: this._currentTemplate,
+          sectionsMeta,
+          selectedSections: this._selectedSections,
           options,
+          baseBranchForDiff: baseBranch,
+          diffSummary,
           repoInfo,
           totalCommits: commits.length,
           totalAuthors: authors.length,
           hotFilesCount: hotFiles.length,
           favoritesCount: favorites.length,
+          defectsCount: topDefects.length,
           storylinesCount: storylines.length,
           highImpactCount: storylines.filter(s => s.impact === 'high').length,
           mediumImpactCount: storylines.filter(s => s.impact === 'medium').length,
@@ -105,7 +240,13 @@ export class ReportExportWebView {
           choreCount: storylines.filter(s => s.category === 'chore').length,
           otherCount: storylines.filter(s => s.category === 'other').length,
           storylines: storylines.slice(0, 50),
-          reportPreview: reportMd.substring(0, 5000)
+          topAuthors: authors.slice(0, 10),
+          topHotFiles: hotFiles.slice(0, 10),
+          topDefects: topDefects.slice(0, 10),
+          favorites: favorites.slice(0, 10),
+          reportPreview: reportMd.substring(0, 8000),
+          reportIsTruncated: reportMd.length > 8000,
+          fullReportLength: reportMd.length
         }
       });
     } catch (err) {
@@ -118,21 +259,22 @@ export class ReportExportWebView {
 
   private async exportMarkdown(webviewView: vscode.WebviewView): Promise<void> {
     try {
-      const options = this.stateService.getFilterOptions();
-      const [repoInfo, commits, hotFiles, authors] = await Promise.all([
-        this.gitService.getRepositoryInfo(),
-        this.gitService.getCommits(options),
-        this.gitService.getHotFiles(20),
-        this.gitService.getAllAuthors()
-      ]);
+      if (!this._cached) {
+        await this.refreshPreview(webviewView);
+      }
+      if (!this._cached) return;
 
+      const c = this._cached;
       const reportMd = this.reportService.generateMarkdownReport(
-        repoInfo, commits, options, hotFiles, authors
+        c.repoInfo, c.commits, c.options, c.hotFiles, c.authors,
+        { template: c.template, sections: c.selectedSections, baseBranchForDiff: c.baseBranchForDiff },
+        c.diffSummary
       );
 
+      const tplLabel = ({ handoff: 'handoff', defect: 'defect', release: 'release' } as Record<ReportTemplate, string>)[c.template];
       const defaultPath = path.join(
         this.workspaceRoot,
-        `git-archaeologist-report-${new Date().toISOString().substring(0, 10)}.md`
+        `git-report-${tplLabel}-${c.options.branch}-${new Date().toISOString().substring(0, 10)}.md`
       );
 
       const uri = await vscode.window.showSaveDialog({
@@ -143,7 +285,7 @@ export class ReportExportWebView {
       if (!uri) return;
 
       fs.writeFileSync(uri.fsPath, reportMd, 'utf-8');
-      vscode.window.showInformationMessage(`报告已导出: ${uri.fsPath}`);
+      vscode.window.showInformationMessage(`报告已导出 (${c.template} · ${c.options.branch}): ${uri.fsPath}`);
 
       const doc = await vscode.workspace.openTextDocument(uri);
       await vscode.window.showTextDocument(doc);
@@ -154,83 +296,22 @@ export class ReportExportWebView {
 
   private async exportJson(webviewView: vscode.WebviewView): Promise<void> {
     try {
-      const options = this.stateService.getFilterOptions();
-      const [repoInfo, commits, hotFiles, authors] = await Promise.all([
-        this.gitService.getRepositoryInfo(),
-        this.gitService.getCommits(options),
-        this.gitService.getHotFiles(100),
-        this.gitService.getAllAuthors()
-      ]);
-
-      const storylines = this.reportService.generateStorylines(commits);
-      const favorites = commits.filter(c => this.stateService.isFavorite(c.hash));
-
-      const allDefects = new Map<string, number>();
-      for (const commit of commits) {
-        const defects = this.reportService.extractDefectsFromMessage(commit.message, commit.body);
-        const linked = this.stateService.getDefectIds(commit.hash);
-        [...defects, ...linked].forEach(d => {
-          allDefects.set(d, (allDefects.get(d) || 0) + 1);
-        });
+      if (!this._cached) {
+        await this.refreshPreview(webviewView);
       }
+      if (!this._cached) return;
 
-      const jsonData = {
-        generatedAt: new Date().toISOString(),
-        repository: repoInfo,
-        filter: options,
-        summary: {
-          totalCommits: commits.length,
-          totalAuthors: authors.length,
-          totalFilesChanged: new Set(commits.flatMap(c => c.files.map(f => f.filePath))).size,
-          totalLinesAdded: commits.reduce((s, c) => s + (c.stats?.totalAdditions || 0), 0),
-          totalLinesDeleted: commits.reduce((s, c) => s + (c.stats?.totalDeletions || 0), 0)
-        },
-        commitsByAuthor: authors.map(a => ({ name: a.name, email: a.email, count: a.commitCount })),
-        hotFiles,
-        storylines: storylines.map(s => ({
-          commitHash: s.commit.hash,
-          narrative: s.narrative,
-          category: s.category,
-          impact: s.impact
-        })),
-        favoriteCommits: favorites.map(c => ({
-          hash: c.hash,
-          shortHash: c.shortHash,
-          author: c.authorName,
-          date: c.date,
-          message: c.message,
-          note: this.stateService.getNote(c.hash),
-          defects: this.stateService.getDefectIds(c.hash)
-        })),
-        topDefects: Array.from(allDefects.entries())
-          .map(([id, count]) => ({ id, count }))
-          .sort((a, b) => b.count - a.count),
-        rawCommits: commits.map(c => ({
-          hash: c.hash,
-          shortHash: c.shortHash,
-          author: c.authorName,
-          authorEmail: c.authorEmail,
-          date: c.date,
-          message: c.message,
-          body: c.body,
-          parents: c.parentHashes,
-          stats: c.stats,
-          files: c.files.map(f => ({
-            status: f.status,
-            filePath: f.filePath,
-            oldFilePath: f.oldFilePath,
-            additions: f.additions,
-            deletions: f.deletions
-          })),
-          isFavorite: this.stateService.isFavorite(c.hash),
-          note: this.stateService.getNote(c.hash),
-          defectIds: this.stateService.getDefectIds(c.hash)
-        }))
-      };
+      const c = this._cached;
+      const json = this.reportService.generateJsonReport(
+        c.repoInfo, c.commits, c.options, c.hotFiles, c.authors,
+        { template: c.template, sections: c.selectedSections, baseBranchForDiff: c.baseBranchForDiff },
+        c.diffSummary
+      );
 
+      const tplLabel = ({ handoff: 'handoff', defect: 'defect', release: 'release' } as Record<ReportTemplate, string>)[c.template];
       const defaultPath = path.join(
         this.workspaceRoot,
-        `git-archaeologist-data-${new Date().toISOString().substring(0, 10)}.json`
+        `git-report-data-${tplLabel}-${c.options.branch}-${new Date().toISOString().substring(0, 10)}.json`
       );
 
       const uri = await vscode.window.showSaveDialog({
@@ -240,8 +321,8 @@ export class ReportExportWebView {
 
       if (!uri) return;
 
-      fs.writeFileSync(uri.fsPath, JSON.stringify(jsonData, null, 2), 'utf-8');
-      vscode.window.showInformationMessage(`数据已导出: ${uri.fsPath}`);
+      fs.writeFileSync(uri.fsPath, JSON.stringify(json, null, 2), 'utf-8');
+      vscode.window.showInformationMessage(`数据已导出 (${c.template} · ${c.options.branch}): ${uri.fsPath}`);
     } catch (err) {
       vscode.window.showErrorMessage(`导出失败: ${err instanceof Error ? err.message : err}`);
     }
@@ -424,24 +505,66 @@ export class ReportExportWebView {
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-    padding: 16px;
+    padding: 14px;
     font-size: 13px;
-    color: var(--vscode-editor-foreground, #333);
-    background: var(--vscode-editor-background, #fff);
+    color: var(--vscode-editor-foreground, #d4d4d4);
+    background: var(--vscode-editor-background, #1e1e1e);
     line-height: 1.5;
   }
-  h1 { font-size: 16px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+  h1 { font-size: 16px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  h2 { font-size: 13px; margin-bottom: 8px; color: var(--vscode-descriptionForeground, #888); text-transform: uppercase; letter-spacing: 0.5px; }
   .card {
-    background: var(--vscode-editor-inactiveSelectionBackground, #f5f5f5);
-    border: 1px solid var(--vscode-panel-border, #ddd);
+    background: var(--vscode-editor-inactiveSelectionBackground, #2b2b2b);
+    border: 1px solid var(--vscode-panel-border, #444);
     border-radius: 6px;
-    padding: 14px;
-    margin-bottom: 14px;
+    padding: 12px;
+    margin-bottom: 12px;
   }
-  .card h3 { font-size: 13px; margin-bottom: 10px; color: var(--vscode-descriptionForeground, #666); text-transform: uppercase; }
+  .template-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .tpl-btn {
+    padding: 7px 12px;
+    border: 1px solid var(--vscode-panel-border, #555);
+    background: var(--vscode-button-secondaryBackground, #3a3d41);
+    color: var(--vscode-button-secondaryForeground, #ddd);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    transition: all 0.15s;
+    flex: 1;
+    min-width: 100px;
+  }
+  .tpl-btn.active {
+    background: var(--vscode-button-background, #0078d4);
+    color: var(--vscode-button-foreground, #fff);
+    border-color: var(--vscode-button-background, #0078d4);
+    box-shadow: 0 2px 6px rgba(0, 120, 212, 0.4);
+  }
+  .tpl-btn .tpl-title { display: block; font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .tpl-btn .tpl-desc { display: block; font-size: 10px; opacity: 0.8; line-height: 1.3; }
+  .diff-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 10px;
+    background: var(--vscode-editorWidget-background, #252526);
+    border-radius: 4px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+  }
+  .diff-label { font-size: 11px; color: var(--vscode-descriptionForeground, #888); }
+  .diff-branch {
+    padding: 2px 8px;
+    background: var(--vscode-button-background, #0078d4);
+    color: var(--vscode-button-foreground, #fff);
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 500;
+  }
+  .diff-arrow { color: var(--vscode-descriptionForeground, #888); font-weight: 700; }
   .action-row { display: flex; gap: 8px; flex-wrap: wrap; }
   .btn {
-    padding: 8px 14px;
+    padding: 7px 12px;
     border: none;
     border-radius: 4px;
     cursor: pointer;
@@ -450,163 +573,444 @@ export class ReportExportWebView {
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    transition: opacity 0.15s;
   }
+  .btn:hover { opacity: 0.88; }
   .btn-primary { background: var(--vscode-button-background, #0078d4); color: var(--vscode-button-foreground, white); }
-  .btn-secondary { background: var(--vscode-button-secondaryBackground, #e8e8e8); color: var(--vscode-button-secondaryForeground, #333); }
-  .btn:hover { opacity: 0.9; }
-  .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; }
+  .btn-secondary { background: var(--vscode-button-secondaryBackground, #3a3d41); color: var(--vscode-button-secondaryForeground, #ddd); }
+  .btn-danger { background: var(--vscode-errorForeground, #f48771); color: #fff; }
+  .btn-small { padding: 4px 10px; font-size: 11px; }
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 6px; margin-bottom: 10px; }
   .stat-item {
     text-align: center;
-    padding: 10px;
-    background: var(--vscode-editor-background, #fff);
-    border: 1px solid var(--vscode-panel-border, #ddd);
+    padding: 8px 4px;
+    background: var(--vscode-editor-background, #1e1e1e);
+    border: 1px solid var(--vscode-panel-border, #444);
     border-radius: 4px;
   }
-  .stat-num { font-size: 20px; font-weight: 700; color: var(--vscode-textLink-activeForeground, #0078d4); }
-  .stat-label { font-size: 10px; color: var(--vscode-descriptionForeground, #888); text-transform: uppercase; margin-top: 2px; }
-  .category-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .stat-num { font-size: 18px; font-weight: 700; color: var(--vscode-textLink-activeForeground, #3794ff); }
+  .stat-label { font-size: 9px; color: var(--vscode-descriptionForeground, #888); text-transform: uppercase; margin-top: 2px; letter-spacing: 0.5px; }
+  .category-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
   .cat-item {
-    padding: 6px 8px;
-    background: var(--vscode-editor-background, #fff);
+    padding: 5px 4px;
+    background: var(--vscode-editor-background, #1e1e1e);
     border-radius: 4px;
     text-align: center;
-    font-size: 11px;
+    font-size: 10px;
+    border: 1px solid var(--vscode-panel-border, #333);
   }
-  .cat-num { font-weight: 700; font-size: 16px; }
-  .preview-section { max-height: 400px; overflow-y: auto; }
+  .cat-num { font-weight: 700; font-size: 14px; }
+  .section-list { display: flex; flex-direction: column; gap: 4px; }
+  .section-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    background: var(--vscode-editor-background, #1e1e1e);
+    border-radius: 4px;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .section-item:hover { border-color: var(--vscode-textBlockQuote-border, #555); }
+  .section-item input[type="checkbox"] { cursor: pointer; }
+  .section-item .sec-label { flex: 1; font-size: 12px; }
+  .section-item .sec-desc { font-size: 10px; color: var(--vscode-descriptionForeground, #888); }
+  .section-item .sec-count {
+    padding: 1px 7px;
+    background: var(--vscode-badge-background, #4d4d4d);
+    color: var(--vscode-badge-foreground, #fff);
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+  }
+  .diff-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  .diff-stat {
+    padding: 8px;
+    background: var(--vscode-editor-background, #1e1e1e);
+    border-radius: 4px;
+    text-align: center;
+    border: 1px solid var(--vscode-panel-border, #333);
+  }
+  .diff-stat-num { font-size: 16px; font-weight: 700; }
+  .diff-stat-num.green { color: #2ea043; }
+  .diff-stat-num.red { color: #f48771; }
+  .diff-stat-num.orange { color: #d29922; }
+  .diff-stat-num.purple { color: #a371f7; }
+  .diff-stat-label { font-size: 10px; color: var(--vscode-descriptionForeground, #888); margin-top: 2px; }
+  .diff-list {
+    max-height: 180px;
+    overflow-y: auto;
+    background: var(--vscode-editor-background, #1e1e1e);
+    border-radius: 4px;
+    padding: 6px;
+    margin-bottom: 6px;
+  }
+  .diff-list-title { font-size: 11px; font-weight: 600; color: var(--vscode-descriptionForeground, #999); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .clickable-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px 7px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 11px;
+    transition: background 0.12s;
+  }
+  .clickable-row:hover { background: var(--vscode-list-hoverBackground, #2a2d2e); }
+  .clickable-row .hash {
+    font-family: 'Cascadia Code', Consolas, monospace;
+    color: var(--vscode-textLink-foreground, #3794ff);
+    font-size: 10px;
+    font-weight: 600;
+  }
+  .clickable-row .path {
+    font-family: 'Cascadia Code', Consolas, monospace;
+    color: var(--vscode-terminal-foreground, #cccccc);
+    font-size: 10px;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-right: 8px;
+  }
+  .clickable-row .meta {
+    color: var(--vscode-descriptionForeground, #888);
+    font-size: 10px;
+    white-space: nowrap;
+  }
+  .risky-row { border-left: 3px solid var(--vscode-errorForeground, #f48771); }
+  .preview-section { max-height: 380px; overflow-y: auto; }
   .preview-section pre {
-    background: var(--vscode-editor-background, #fff);
-    padding: 12px;
+    background: var(--vscode-editor-background, #1e1e1e);
+    padding: 10px;
     border-radius: 4px;
     font-family: 'Cascadia Code', Consolas, monospace;
     font-size: 11px;
     white-space: pre-wrap;
     word-break: break-word;
-    max-height: 350px;
+    max-height: 340px;
     overflow-y: auto;
+    color: var(--vscode-editor-foreground, #d4d4d4);
+    border: 1px solid var(--vscode-panel-border, #333);
   }
-  .loading { padding: 30px; text-align: center; color: #888; display: none; }
+  .preview-trunc-note {
+    font-size: 10px;
+    color: var(--vscode-descriptionForeground, #888);
+    margin-top: 4px;
+    font-style: italic;
+  }
+  .loading { padding: 26px; text-align: center; color: #888; display: none; }
   .loading.show { display: block; }
   .spinner { font-size: 28px; animation: spin 1s linear infinite; display: inline-block; margin-bottom: 8px; }
   @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-  .storyline-list { max-height: 300px; overflow-y: auto; }
-  .storyline-item {
-    padding: 8px 10px;
-    margin: 4px 0;
-    background: var(--vscode-editor-background, #fff);
-    border-left: 3px solid var(--vscode-textLink-activeForeground, #0078d4);
-    border-radius: 0 4px 4px 0;
-    font-size: 12px;
+  .empty-tip {
+    padding: 10px;
+    text-align: center;
+    color: var(--vscode-descriptionForeground, #888);
+    font-size: 11px;
+    background: var(--vscode-editor-background, #1e1e1e);
+    border-radius: 4px;
   }
-  .storyline-meta { font-size: 10px; color: #888; margin-bottom: 3px; }
+  .storyline-list { max-height: 220px; overflow-y: auto; }
+  .storyline-item {
+    padding: 6px 8px;
+    margin: 3px 0;
+    background: var(--vscode-editor-background, #1e1e1e);
+    border-left: 3px solid var(--vscode-textLink-activeForeground, #3794ff);
+    border-radius: 0 4px 4px 0;
+    font-size: 11px;
+  }
+  .storyline-meta { font-size: 10px; color: #888; margin-bottom: 2px; }
 </style>
 </head>
 <body>
-  <h1>📤 报告导出</h1>
+  <h1>📤 报告工作台</h1>
 
   <div class="card">
-    <h3>📊 数据概览</h3>
+    <h2>📋 报告模板</h2>
+    <div class="template-row" id="templateRow">
+      <button class="tpl-btn active" data-tpl="handoff" onclick="selectTemplate('handoff')">
+        <span class="tpl-title">🤝 交接概览</span>
+        <span class="tpl-desc">项目全貌/作者/热点</span>
+      </button>
+      <button class="tpl-btn" data-tpl="defect" onclick="selectTemplate('defect')">
+        <span class="tpl-title">🔍 缺陷排查</span>
+        <span class="tpl-desc">可疑提交/风险/缺陷统计</span>
+      </button>
+      <button class="tpl-btn" data-tpl="release" onclick="selectTemplate('release')">
+        <span class="tpl-title">🚀 发布回顾</span>
+        <span class="tpl-desc">分支对比/故事线/明细</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>🔀 分支对比（可选）</h2>
+    <div class="diff-row" id="diffRow">
+      <span class="diff-label">基准分支：</span>
+      <span class="diff-branch" id="baseBranchLabel" style="background:#555">未选择</span>
+      <span class="diff-arrow">→</span>
+      <span class="diff-label">当前分支：</span>
+      <span class="diff-branch" id="targetBranchLabel">-</span>
+      <div class="action-row" style="margin-left:auto">
+        <button class="btn btn-small btn-secondary" onclick="pickBaseBranch()">选择基准分支</button>
+        <button class="btn btn-small btn-danger" onclick="clearBaseBranch()">清除</button>
+      </div>
+    </div>
+    <div id="diffContent" style="display:none">
+      <div class="diff-stats" id="diffStats"></div>
+      <div class="diff-list-title">新增提交</div>
+      <div class="diff-list" id="addedCommitsList"></div>
+      <div class="diff-list-title">⚠️ 风险提交</div>
+      <div class="diff-list" id="riskyCommitsList"></div>
+      <div class="diff-list-title">最频繁变更文件</div>
+      <div class="diff-list" id="changedFilesList"></div>
+      <div class="diff-list-title">目标分支独有作者</div>
+      <div class="diff-list" id="authorsOnlyInTargetList"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>📊 数据概览</h2>
     <div class="loading show" id="loading">
       <div class="spinner">⏳</div>
       <div>正在加载数据...</div>
     </div>
     <div id="overviewData" style="display:none">
       <div class="stats-grid" id="statsGrid"></div>
-      <div style="margin-top:12px">
-        <h4 style="font-size:11px;color:#888;margin-bottom:6px;text-transform:uppercase">按分类统计</h4>
+      <div style="margin-top:10px">
+        <div style="font-size:10px;color:#888;margin-bottom:5px;text-transform:uppercase">按分类统计</div>
         <div class="category-grid" id="categoryGrid"></div>
       </div>
     </div>
   </div>
 
   <div class="card">
-    <h3>📖 改动故事线</h3>
-    <div class="action-row" style="margin-bottom:10px">
-      <button class="btn btn-secondary" onclick="generateStoryline()">📖 生成完整故事线</button>
-      <button class="btn btn-secondary" onclick="copyStoryline()">📋 复制到剪贴板</button>
+    <h2>🧩 章节勾选（导出时仅包含勾选）</h2>
+    <div class="section-list" id="sectionList"></div>
+  </div>
+
+  <div class="card">
+    <h2>📖 改动故事线</h2>
+    <div class="action-row" style="margin-bottom:8px">
+      <button class="btn btn-secondary btn-small" onclick="generateStoryline()">📖 完整故事线</button>
+      <button class="btn btn-secondary btn-small" onclick="copyStoryline()">📋 复制</button>
     </div>
     <div class="storyline-list" id="storylineList"></div>
   </div>
 
   <div class="card">
-    <h3>💾 导出选项</h3>
+    <h2>💾 导出</h2>
     <div class="action-row">
-      <button class="btn btn-primary" onclick="exportMarkdown()">📄 导出 Markdown 报告</button>
-      <button class="btn btn-secondary" onclick="exportJson()">📦 导出 JSON 数据</button>
+      <button class="btn btn-primary" onclick="exportMarkdown()">📄 导出 Markdown</button>
+      <button class="btn btn-secondary" onclick="exportJson()">📦 导出 JSON</button>
+      <button class="btn btn-secondary btn-small" onclick="openDiff()">🔀 版本对比</button>
     </div>
-    <p style="font-size:11px;color:#888;margin-top:8px">报告内容基于当前筛选条件（分支、日期、作者、关键词）生成。</p>
+    <p style="font-size:10px;color:#888;margin-top:6px">
+      报告基于：<span id="currentBranchTip">-</span> · 模板：<span id="currentTemplateTip">-</span> · 共 <span id="sectionsCountTip">0</span> 个章节
+    </p>
   </div>
 
   <div class="card">
-    <h3>🔀 比较工具</h3>
-    <div class="action-row">
-      <button class="btn btn-secondary" onclick="openDiff()">🔀 比较两个版本差异</button>
-    </div>
-    <p style="font-size:11px;color:#888;margin-top:8px">在时间线中选中两个提交后可进行差异比较。</p>
-  </div>
-
-  <div class="card">
-    <h3>📝 报告预览</h3>
+    <h2>📝 报告预览</h2>
     <div class="preview-section">
-      <pre id="reportPreview">点击上方"生成预览"或导出按钮生成报告</pre>
+      <pre id="reportPreview">等待生成预览...</pre>
     </div>
+    <div class="preview-trunc-note" id="previewTruncNote" style="display:none"></div>
   </div>
 
 <script>
   const vs = acquireVsCodeApi();
+  function selectTemplate(tpl) { vs.postMessage({ command: 'selectTemplate', template: tpl }); }
+  function toggleSection(sec) { vs.postMessage({ command: 'toggleSection', section: sec }); }
+  function pickBaseBranch() { vs.postMessage({ command: 'pickBaseBranch' }); }
+  function clearBaseBranch() { vs.postMessage({ command: 'clearBaseBranch' }); }
   function exportMarkdown() { vs.postMessage({ command: 'exportMarkdown' }); }
   function exportJson() { vs.postMessage({ command: 'exportJson' }); }
   function copyStoryline() { vs.postMessage({ command: 'copyStoryline' }); }
   function generateStoryline() { vs.postMessage({ command: 'generateStoryline' }); }
   function openDiff() { vs.postMessage({ command: 'openDiffCommits' }); }
+
   function doRefresh() {
     document.getElementById('loading').classList.add('show');
     document.getElementById('overviewData').style.display = 'none';
     vs.postMessage({ command: 'generatePreview' });
   }
-  setTimeout(doRefresh, 300);
+  setTimeout(doRefresh, 200);
+
+  function esc(s) { return (s || '').toString().replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+
+  document.addEventListener('click', function(e) {
+    var commitRow = e.target.closest('[data-commit-hash]');
+    if (commitRow) {
+      vs.postMessage({ command: 'openCommitFromDiff', commitHash: commitRow.getAttribute('data-commit-hash') });
+      return;
+    }
+    var fileRow = e.target.closest('[data-file-path]');
+    if (fileRow) {
+      vs.postMessage({ command: 'showFileHistoryFromDiff', filePath: fileRow.getAttribute('data-file-path') });
+      return;
+    }
+  });
+
   window.addEventListener('message', e => {
     const msg = e.data;
     if (msg.command === 'showLoading') {
       document.getElementById('loading').classList.add('show');
-    }
-    if (msg.command === 'updatePreview') {
-      document.getElementById('loading').classList.remove('show');
-      document.getElementById('overviewData').style.display = '';
-      const d = msg.data;
-      document.getElementById('statsGrid').innerHTML = \`
-        <div class="stat-item"><div class="stat-num">\${d.totalCommits}</div><div class="stat-label">提交</div></div>
-        <div class="stat-item"><div class="stat-num">\${d.totalAuthors}</div><div class="stat-label">作者</div></div>
-        <div class="stat-item"><div class="stat-num">\${d.hotFilesCount}</div><div class="stat-label">热文件</div></div>
-        <div class="stat-item"><div class="stat-num">\${d.favoritesCount}</div><div class="stat-label">收藏</div></div>
-        <div class="stat-item"><div class="stat-num">\${d.highImpactCount}</div><div class="stat-label" style="color:#da3633">🔥 大规模</div></div>
-        <div class="stat-item"><div class="stat-num">\${d.mediumImpactCount}</div><div class="stat-label" style="color:#d4a72c">⚡ 中等</div></div>
-        <div class="stat-item"><div class="stat-num">\${d.lowImpactCount}</div><div class="stat-label" style="color:#2ea043">✨ 小范围</div></div>
-        <div class="stat-item"><div class="stat-num">\${d.storylinesCount}</div><div class="stat-label">故事</div></div>
-      \`;
-      document.getElementById('categoryGrid').innerHTML = \`
-        <div class="cat-item"><div class="cat-num" style="color:#2ea043">\${d.featureCount}</div>新功能</div>
-        <div class="cat-item"><div class="cat-num" style="color:#da3633">\${d.fixCount}</div>缺陷修复</div>
-        <div class="cat-item"><div class="cat-num" style="color:#8957e5">\${d.refactorCount}</div>重构</div>
-        <div class="cat-item"><div class="cat-num" style="color:#1f6feb">\${d.docsCount}</div>文档</div>
-        <div class="cat-item"><div class="cat-num" style="color:#6e7781">\${d.choreCount}</div>维护</div>
-        <div class="cat-item"><div class="cat-num" style="color:#57606a">\${d.otherCount}</div>其他</div>
-      \`;
-      document.getElementById('storylineList').innerHTML = d.storylines.map(s => \`
-        <div class="storyline-item">
-          <div class="storyline-meta">\${new Date(s.commit.date).toLocaleString('zh-CN')} · \${s.commit.authorName} · <span style="color:#1f6feb">\${s.commit.shortHash}</span>
-            · <span style="color:\${s.impact==='high'?'#da3633':s.impact==='medium'?'#d4a72c':'#2ea043'}">\${s.impact==='high'?'🔥大规模':s.impact==='medium'?'⚡中等':'✨小范围'}</span>
-            · <span style="color:\${s.category==='feature'?'#2ea043':s.category==='fix'?'#da3633':s.category==='refactor'?'#8957e5':'#666'}">\${({feature:'新功能',fix:'缺陷修复',refactor:'重构',docs:'文档',chore:'维护',other:'其他'})[s.category]}</span>
-          </div>
-          <div>\${s.narrative}</div>
-        </div>
-      \`).join('');
-      document.getElementById('reportPreview').textContent = d.reportPreview + (d.reportPreview.length >= 5000 ? '\\n\\n... (内容已截断，完整内容请导出 Markdown 查看)' : '');
+      document.getElementById('overviewData').style.display = 'none';
+      return;
     }
     if (msg.command === 'showError') {
       document.getElementById('loading').classList.remove('show');
       alert('错误: ' + msg.message);
+      return;
     }
+    if (msg.command !== 'updatePreview') return;
+    const d = msg.data;
+    document.getElementById('loading').classList.remove('show');
+    document.getElementById('overviewData').style.display = '';
+
+    document.querySelectorAll('.tpl-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.tpl === d.currentTemplate);
+    });
+
+    const baseLbl = document.getElementById('baseBranchLabel');
+    baseLbl.textContent = d.baseBranchForDiff || '未选择';
+    baseLbl.style.background = d.baseBranchForDiff ? undefined : '#555';
+    document.getElementById('targetBranchLabel').textContent = d.options.branch;
+
+    const diffContent = document.getElementById('diffContent');
+    if (d.diffSummary && d.baseBranchForDiff) {
+      diffContent.style.display = '';
+      const ds = d.diffSummary;
+      document.getElementById('diffStats').innerHTML = \`
+        <div class="diff-stat"><div class="diff-stat-num green">+\${ds.addedCommits.length}</div><div class="diff-stat-label">新增提交</div></div>
+        <div class="diff-stat"><div class="diff-stat-num red">-\${ds.removedCommits.length}</div><div class="diff-stat-label">缺失提交</div></div>
+        <div class="diff-stat"><div class="diff-stat-num orange">\${ds.authorsOnlyInTarget.length}</div><div class="diff-stat-label">独有作者</div></div>
+        <div class="diff-stat"><div class="diff-stat-num purple">\${ds.riskyCommits.length}</div><div class="diff-stat-label">风险提交</div></div>
+        <div class="diff-stat"><div class="diff-stat-num" style="color:#3794ff">\${ds.changedFiles.length}</div><div class="diff-stat-label">变更文件</div></div>
+      \`;
+      document.getElementById('addedCommitsList').innerHTML = ds.addedCommits.length === 0
+        ? '<div class="empty-tip">无新增提交</div>'
+        : ds.addedCommits.slice(0, 20).map(function(c) {
+            return '<div class="clickable-row" data-commit-hash="' + c.hash + '">'
+              + '<span class="hash">' + c.shortHash + '</span>'
+              + '<span class="meta">' + esc(c.authorName) + ' · ' + new Date(c.date).toLocaleDateString('zh-CN') + '</span>'
+              + '</div>'
+              + '<div style="padding:0 7px 5px 32px;font-size:10px;color:#aaa">' + esc(c.message.substring(0, 80)) + '</div>';
+          }).join('');
+      document.getElementById('riskyCommitsList').innerHTML = ds.riskyCommits.length === 0
+        ? '<div class="empty-tip">未识别到风险提交 ✅</div>'
+        : ds.riskyCommits.map(function(c) {
+            var files = c.stats && c.stats.totalFiles || 0;
+            var adds = c.stats && c.stats.totalAdditions || 0;
+            var dels = c.stats && c.stats.totalDeletions || 0;
+            return '<div class="clickable-row risky-row" data-commit-hash="' + c.hash + '">'
+              + '<span class="hash">⚠️ ' + c.shortHash + '</span>'
+              + '<span class="meta">' + files + '文件 +' + adds + ' -' + dels + '</span>'
+              + '</div>'
+              + '<div style="padding:0 7px 5px 32px;font-size:10px;color:#aaa">' + esc(c.message.substring(0, 80)) + '</div>';
+          }).join('');
+      document.getElementById('changedFilesList').innerHTML = ds.changedFiles.length === 0
+        ? '<div class="empty-tip">无变更文件</div>'
+        : ds.changedFiles.slice(0, 30).map(function(f) {
+            return '<div class="clickable-row" data-file-path="' + esc(f.filePath).replace(/"/g, '&quot;') + '">'
+              + '<span class="path">' + esc(f.filePath) + '</span>'
+              + '<span class="meta" style="color:#2ea043">+' + f.additions + '</span>'
+              + '<span class="meta" style="color:#f48771">-' + f.deletions + '</span>'
+              + '</div>';
+          }).join('');
+      document.getElementById('authorsOnlyInTargetList').innerHTML = ds.authorsOnlyInTarget.length === 0
+        ? '<div class="empty-tip">两分支作者相同</div>'
+        : ds.authorsOnlyInTarget.map(function(a) {
+            return '<div class="clickable-row">'
+              + '<span style="color:#3794ff;font-weight:600">' + esc(a.name) + '</span>'
+              + '<span class="meta">' + a.commitCount + ' 提交</span>'
+              + '</div>';
+          }).join('');
+    } else {
+      diffContent.style.display = 'none';
+    }
+
+    document.getElementById('statsGrid').innerHTML = \`
+      <div class="stat-item"><div class="stat-num">\${d.totalCommits}</div><div class="stat-label">提交</div></div>
+      <div class="stat-item"><div class="stat-num">\${d.totalAuthors}</div><div class="stat-label">作者</div></div>
+      <div class="stat-item"><div class="stat-num">\${d.hotFilesCount}</div><div class="stat-label">热文件</div></div>
+      <div class="stat-item"><div class="stat-num">\${d.favoritesCount}</div><div class="stat-label">收藏</div></div>
+      <div class="stat-item"><div class="stat-num">\${d.defectsCount}</div><div class="stat-label">缺陷</div></div>
+      <div class="stat-item"><div class="stat-num" style="color:#f48771">\${d.highImpactCount}</div><div class="stat-label" style="color:#c07050">🔥大规模</div></div>
+      <div class="stat-item"><div class="stat-num" style="color:#d4a72c">\${d.mediumImpactCount}</div><div class="stat-label" style="color:#b09020">⚡中等</div></div>
+      <div class="stat-item"><div class="stat-num" style="color:#2ea043">\${d.lowImpactCount}</div><div class="stat-label" style="color:#30a060">✨小范围</div></div>
+    \`;
+    document.getElementById('categoryGrid').innerHTML = \`
+      <div class="cat-item"><div class="cat-num" style="color:#2ea043">\${d.featureCount}</div>新功能</div>
+      <div class="cat-item"><div class="cat-num" style="color:#f48771">\${d.fixCount}</div>缺陷修复</div>
+      <div class="cat-item"><div class="cat-num" style="color:#a371f7">\${d.refactorCount}</div>重构</div>
+      <div class="cat-item"><div class="cat-num" style="color:#3794ff">\${d.docsCount}</div>文档</div>
+      <div class="cat-item"><div class="cat-num" style="color:#9e9e9e">\${d.choreCount}</div>维护</div>
+      <div class="cat-item"><div class="cat-num" style="color:#757575">\${d.otherCount}</div>其他</div>
+    \`;
+
+    const countsBySection = {
+      overview: d.totalCommits,
+      branchDiff: d.diffSummary ? d.diffSummary.addedCommits.length : 0,
+      authors: d.totalAuthors,
+      hotFiles: d.hotFilesCount,
+      storylines: d.storylinesCount,
+      favorites: d.favoritesCount,
+      defects: d.defectsCount,
+      commitList: d.totalCommits
+    };
+    document.getElementById('sectionList').innerHTML = d.sectionsMeta.map(function(s) {
+      var checked = d.selectedSections.indexOf(s.key) >= 0;
+      var cnt = countsBySection[s.key] != null ? countsBySection[s.key] : 0;
+      return '<label class="section-item">'
+        + '<input type="checkbox" ' + (checked ? 'checked' : '') + ' onchange="toggleSection(\\'' + s.key + '\\')">'
+        + '<div style="flex:1">'
+        + '<div class="sec-label">' + esc(s.label) + '</div>'
+        + '<div class="sec-desc">' + esc(s.description) + '</div>'
+        + '</div>'
+        + '<span class="sec-count">' + cnt + '</span>'
+        + '</label>';
+    }).join('');
+
+    const catClr = { feature:'#2ea043', fix:'#f48771', refactor:'#a371f7', docs:'#3794ff', chore:'#9e9e9e', other:'#757575' };
+    const catLabels = { feature:'新功能', fix:'缺陷修复', refactor:'重构', docs:'文档', chore:'维护', other:'其他' };
+    document.getElementById('storylineList').innerHTML = d.storylines.length === 0
+      ? '<div class="empty-tip">暂无故事线数据</div>'
+      : d.storylines.map(function(s) {
+          var impactClr = s.impact === 'high' ? '#f48771' : s.impact === 'medium' ? '#d29922' : '#2ea043';
+          var impactIcon = s.impact === 'high' ? '🔥' : s.impact === 'medium' ? '⚡' : '✨';
+          return '<div class="storyline-item" style="border-left-color:' + catClr[s.category] + '">'
+            + '<div class="storyline-meta">'
+            + new Date(s.commit.date).toLocaleDateString('zh-CN') + ' · ' + esc(s.commit.authorName) + ' · <span style="color:#3794ff">' + s.commit.shortHash + '</span>'
+            + ' · <span style="color:' + impactClr + '">' + impactIcon + '</span>'
+            + ' · <span style="color:' + catClr[s.category] + '">' + catLabels[s.category] + '</span>'
+            + '</div>'
+            + '<div>' + esc(s.narrative.substring(0, 240)) + (s.narrative.length > 240 ? '...' : '') + '</div>'
+            + '</div>';
+        }).join('');
+
+    const pvn = document.getElementById('reportPreview');
+    pvn.textContent = d.reportPreview + (d.reportIsTruncated ? '\\n\\n... (预览已截断，完整 ' + d.fullReportLength + ' 字符请通过导出 Markdown 查看)' : '');
+    const tr = document.getElementById('previewTruncNote');
+    if (d.reportIsTruncated) {
+      tr.style.display = 'block';
+      tr.textContent = '⚠️ 预览长度 ' + d.reportPreview.length + ' 字符（共 ' + d.fullReportLength + '），完整内容请导出 Markdown';
+    } else {
+      tr.style.display = 'none';
+    }
+
+    document.getElementById('currentBranchTip').textContent = d.options.branch;
+    const tpl = d.templates.find(function(t) { return t.id === d.currentTemplate; });
+    document.getElementById('currentTemplateTip').textContent = (tpl && tpl.label) || d.currentTemplate;
+    document.getElementById('sectionsCountTip').textContent = d.selectedSections.length;
   });
 </script>
 </body>

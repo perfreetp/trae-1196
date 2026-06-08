@@ -123,6 +123,35 @@ export interface ReportData {
   topDefects: { id: string; count: number }[];
 }
 
+export type ReportTemplate = 'handoff' | 'defect' | 'release';
+
+export type ReportSectionKey =
+  | 'overview'
+  | 'branchDiff'
+  | 'authors'
+  | 'hotFiles'
+  | 'storylines'
+  | 'favorites'
+  | 'defects'
+  | 'commitList';
+
+export interface BranchDiffSummary {
+  baseBranch: string;
+  targetBranch: string;
+  addedCommits: GitCommit[];
+  removedCommits: GitCommit[];
+  authorsOnlyInTarget: { name: string; email: string; commitCount: number }[];
+  authorsOnlyInBase: { name: string; email: string; commitCount: number }[];
+  changedFiles: { filePath: string; additions: number; deletions: number }[];
+  riskyCommits: GitCommit[];
+}
+
+export interface ReportGenerateOptions {
+  template: ReportTemplate;
+  sections: ReportSectionKey[];
+  baseBranchForDiff?: string;
+}
+
 export interface PluginState {
   currentBranch: string;
   filterOptions: FilterOptions;
